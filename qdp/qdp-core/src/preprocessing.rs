@@ -64,6 +64,11 @@ impl Preprocessor {
     ///
     /// Returns error if the calculated norm is zero.
     pub fn calculate_l2_norm(host_data: &[f64]) -> Result<f64> {
+        log::warn!(
+            "Using CPU-based L2 norm calculation instead of GPU kernel. \
+             Consider increasing data size or using GPU-accelerated methods for better performance."
+        );
+        
         let norm = {
             crate::profile_scope!("CPU::L2Norm");
             let norm_sq: f64 = host_data.par_iter().map(|x| x * x).sum();
@@ -113,6 +118,11 @@ impl Preprocessor {
         _num_samples: usize,
         sample_size: usize,
     ) -> Result<Vec<f64>> {
+        log::warn!(
+            "Using CPU-based batch L2 norm calculation instead of GPU kernel. \
+             Consider using GPU-accelerated methods for better performance."
+        );
+        
         crate::profile_scope!("CPU::BatchL2Norm");
 
         // Process chunks in parallel using rayon

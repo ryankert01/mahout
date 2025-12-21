@@ -28,6 +28,8 @@ rayon = "1.10"
 arrow = "54"
 # Parquet support for Arrow
 parquet = "54"
+# Logging
+log = "0.4"
 
 # Release profile optimizations
 [profile.release]
