@@ -362,11 +362,15 @@ def run_mahout_parquet(engine, n_qubits, n_samples):
     start_time = time.perf_counter()
 
     # Direct Parquet to GPU pipeline (IO + Encode combined)
+    # Note: encode_from_parquet() combines IO and encoding in a single optimized call
     parquet_encode_start = time.perf_counter()
     batched_tensor = engine.encode_from_parquet(DATA_FILE, n_qubits, "amplitude")
     parquet_encode_time = time.perf_counter() - parquet_encode_start
-    timing.record("1. IO + Encoding", parquet_encode_time)
-    print(f"  Parquet->GPU (IO+Encode): {parquet_encode_time:.4f} s")
+    timing.record("1. IO (Parquet Read)", parquet_encode_time)
+    timing.record("2. Encoding (Amplitude)", 0.0)  # Combined with IO in single call
+    print(f"  IO + Encoding (combined): {parquet_encode_time:.4f} s")
+    print(f"    - Kernel: Amplitude encoding")
+    print(f"    - Note: IO and encoding are optimized in single call")
 
     # Check if performance suggests CPU fallback
     # Expected GPU performance: ~0.01-0.1s per sample for typical configs
@@ -390,7 +394,7 @@ def run_mahout_parquet(engine, n_qubits, n_samples):
     dlpack_start = time.perf_counter()
     gpu_batched = torch.from_dlpack(batched_tensor)
     dlpack_time = time.perf_counter() - dlpack_start
-    timing.record("2. DLPack Conversion", dlpack_time)
+    timing.record("3. DLPack Conversion", dlpack_time)
     print(f"  DLPack conversion: {dlpack_time:.4f} s")
 
     # Reshape to [n_samples, state_len] (still complex)
@@ -401,7 +405,7 @@ def run_mahout_parquet(engine, n_qubits, n_samples):
     gpu_reshaped = gpu_batched.view(n_samples, state_len)
     gpu_all_data = gpu_reshaped.abs().to(torch.float32)
     reshape_time = time.perf_counter() - reshape_start
-    timing.record("3. Reshape & Convert", reshape_time)
+    timing.record("4. Reshape & Convert", reshape_time)
     print(f"  Reshape & convert: {reshape_time:.4f} s")
 
     # Forward pass (data already on GPU)
@@ -410,7 +414,7 @@ def run_mahout_parquet(engine, n_qubits, n_samples):
         batch = gpu_all_data[i : i + BATCH_SIZE]
         _ = model(batch)
     forward_time = time.perf_counter() - forward_start
-    timing.record("4. Forward Pass", forward_time)
+    timing.record("5. Forward Pass", forward_time)
 
     torch.cuda.synchronize()
     total_time = time.perf_counter() - start_time
@@ -448,8 +452,11 @@ def run_mahout_arrow(engine, n_qubits, n_samples):
     arrow_encode_start = time.perf_counter()
     batched_tensor = engine.encode_from_arrow_ipc(ARROW_FILE, n_qubits, "amplitude")
     arrow_encode_time = time.perf_counter() - arrow_encode_start
-    timing.record("1. IO + Encoding", arrow_encode_time)
-    print(f"  Arrow->GPU (IO+Encode): {arrow_encode_time:.4f} s")
+    timing.record("1. IO (Arrow Read)", arrow_encode_time)
+    timing.record("2. Encoding (Amplitude)", 0.0)  # Combined with IO in single call
+    print(f"  IO + Encoding (combined): {arrow_encode_time:.4f} s")
+    print(f"    - Kernel: Amplitude encoding")
+    print(f"    - Note: IO and encoding are optimized in single call")
 
     # Check if performance suggests CPU fallback
     expected_time_per_sample = 0.1  # Conservative estimate for GPU
@@ -470,7 +477,7 @@ def run_mahout_arrow(engine, n_qubits, n_samples):
     dlpack_start = time.perf_counter()
     gpu_batched = torch.from_dlpack(batched_tensor)
     dlpack_time = time.perf_counter() - dlpack_start
-    timing.record("2. DLPack Conversion", dlpack_time)
+    timing.record("3. DLPack Conversion", dlpack_time)
     print(f"  DLPack conversion: {dlpack_time:.4f} s")
 
     state_len = 1 << n_qubits
@@ -479,7 +486,7 @@ def run_mahout_arrow(engine, n_qubits, n_samples):
     gpu_reshaped = gpu_batched.view(n_samples, state_len)
     gpu_all_data = gpu_reshaped.abs().to(torch.float32)
     reshape_time = time.perf_counter() - reshape_start
-    timing.record("3. Reshape & Convert", reshape_time)
+    timing.record("4. Reshape & Convert", reshape_time)
     print(f"  Reshape & convert: {reshape_time:.4f} s")
 
     forward_start = time.perf_counter()
@@ -487,7 +494,7 @@ def run_mahout_arrow(engine, n_qubits, n_samples):
         batch = gpu_all_data[i : i + BATCH_SIZE]
         _ = model(batch)
     forward_time = time.perf_counter() - forward_start
-    timing.record("4. Forward Pass", forward_time)
+    timing.record("5. Forward Pass", forward_time)
 
     torch.cuda.synchronize()
     total_time = time.perf_counter() - start_time
