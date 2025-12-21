@@ -368,6 +368,24 @@ def run_mahout_parquet(engine, n_qubits, n_samples):
     timing.record("1. IO + Encoding", parquet_encode_time)
     print(f"  Parquet->GPU (IO+Encode): {parquet_encode_time:.4f} s")
 
+    # Check if performance suggests CPU fallback
+    # Expected GPU performance: ~0.01-0.1s per sample for typical configs
+    # CPU fallback: 10-100x slower
+    expected_time_per_sample = 0.1  # Conservative estimate for GPU
+    if parquet_encode_time > (n_samples * expected_time_per_sample):
+        print(
+            f"  ⚠️  WARNING: Encoding time is unusually slow ({parquet_encode_time:.2f}s for {n_samples} samples)"
+        )
+        print(
+            "  This suggests Mahout may be using CPU instead of GPU. Expected: <{:.1f}s".format(
+                n_samples * expected_time_per_sample
+            )
+        )
+        print("  Check GPU utilization with: nvidia-smi")
+        print(
+            "  If GPU util is 0%, rebuild Mahout: cd qdp-python/ && cargo clean && maturin develop"
+        )
+
     # Convert to torch tensor (single DLPack call)
     dlpack_start = time.perf_counter()
     gpu_batched = torch.from_dlpack(batched_tensor)
@@ -432,6 +450,22 @@ def run_mahout_arrow(engine, n_qubits, n_samples):
     arrow_encode_time = time.perf_counter() - arrow_encode_start
     timing.record("1. IO + Encoding", arrow_encode_time)
     print(f"  Arrow->GPU (IO+Encode): {arrow_encode_time:.4f} s")
+
+    # Check if performance suggests CPU fallback
+    expected_time_per_sample = 0.1  # Conservative estimate for GPU
+    if arrow_encode_time > (n_samples * expected_time_per_sample):
+        print(
+            f"  ⚠️  WARNING: Encoding time is unusually slow ({arrow_encode_time:.2f}s for {n_samples} samples)"
+        )
+        print(
+            "  This suggests Mahout may be using CPU instead of GPU. Expected: <{:.1f}s".format(
+                n_samples * expected_time_per_sample
+            )
+        )
+        print("  Check GPU utilization with: nvidia-smi")
+        print(
+            "  If GPU util is 0%, rebuild Mahout: cd qdp-python/ && cargo clean && maturin develop"
+        )
 
     dlpack_start = time.perf_counter()
     gpu_batched = torch.from_dlpack(batched_tensor)
