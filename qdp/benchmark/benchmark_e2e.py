@@ -532,10 +532,28 @@ if __name__ == "__main__":
 
     generate_data(args.qubits, args.samples)
 
+    # Print GPU information
+    print("\n" + "=" * 70)
+    print("GPU CONFIGURATION")
+    print("=" * 70)
+    if torch.cuda.is_available():
+        print(f"PyTorch CUDA available: Yes")
+        print(f"Number of GPUs: {torch.cuda.device_count()}")
+        print(f"Current GPU: {torch.cuda.current_device()}")
+        print(f"GPU Name: {torch.cuda.get_device_name(torch.cuda.current_device())}")
+        print(
+            f"CUDA_VISIBLE_DEVICES: {os.environ.get('CUDA_VISIBLE_DEVICES', 'Not set')}"
+        )
+    else:
+        print(f"PyTorch CUDA available: No")
+        print("WARNING: CUDA is not available to PyTorch!")
+
     try:
         engine = QdpEngine(0)
+        print(f"Mahout QdpEngine initialized on device 0")
     except Exception as e:
         print(f"Mahout Init Error: {e}")
+        print("ERROR: Failed to initialize QdpEngine. Please check CUDA installation.")
         exit(1)
 
     # Clean cache before starting benchmarks

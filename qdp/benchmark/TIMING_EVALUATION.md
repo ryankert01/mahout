@@ -169,6 +169,25 @@ python -c "from mahout_qdp import QdpEngine; engine = QdpEngine(0); print('GPU i
 python -c "import torch; print(f'CUDA available: {torch.cuda.is_available()}, Device: {torch.cuda.get_device_name(0) if torch.cuda.is_available() else \"None\"}')"
 ```
 
+**Monitor GPU usage during benchmark:**
+```bash
+# In a separate terminal, watch GPU utilization in real-time
+watch -n 0.5 nvidia-smi
+
+# Or check GPU memory and utilization once
+nvidia-smi
+```
+
+When Mahout is using GPU correctly:
+- GPU Memory should increase when encoding starts
+- GPU Utilization should show high percentage (70-100%) during "IO + Encoding" phase
+- If GPU Utilization stays at 0% during encoding, there may be an installation issue
+
+**Common issues:**
+- If built without CUDA support, Mahout will silently fall back to CPU
+- Ensure `nvcc --version` works before building
+- After any CUDA changes, run `cargo clean` then rebuild with `maturin develop`
+
 ## Requirements
 
 - NVIDIA GPU with CUDA support
