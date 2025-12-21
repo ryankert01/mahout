@@ -2,6 +2,11 @@
 """
 Test script to verify the TimingTracker logic works correctly.
 This can be run without GPU/CUDA.
+
+Note: TimingTracker is duplicated here intentionally to make this a standalone
+test that doesn't require importing the benchmark module (which has heavy
+dependencies like torch, cuda, etc.). This allows testing the timing logic
+in isolation.
 """
 
 import sys
@@ -9,7 +14,7 @@ import os
 
 sys.path.insert(0, os.path.dirname(__file__))
 
-# Import just the TimingTracker class
+# TimingTracker class duplicated here for standalone testing
 from collections import defaultdict
 
 

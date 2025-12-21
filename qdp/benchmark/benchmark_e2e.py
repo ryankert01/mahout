@@ -145,6 +145,12 @@ def generate_data(n_qubits, n_samples):
 # 1. Qiskit Full Pipeline
 # -----------------------------------------------------------
 def run_qiskit(n_qubits, n_samples):
+    """
+    Run Qiskit benchmark pipeline.
+
+    Returns:
+        tuple: (total_time, state_tensor, timing_tracker)
+    """
     if not HAS_QISKIT:
         print("\n[Qiskit] Not installed, skipping.")
         return 0.0, None, None
@@ -235,6 +241,12 @@ def run_qiskit(n_qubits, n_samples):
 # 2. PennyLane Full Pipeline
 # -----------------------------------------------------------
 def run_pennylane(n_qubits, n_samples):
+    """
+    Run PennyLane benchmark pipeline.
+
+    Returns:
+        tuple: (total_time, state_tensor, timing_tracker)
+    """
     if not HAS_PENNYLANE:
         print("\n[PennyLane] Not installed, skipping.")
         return 0.0, None, None
@@ -325,6 +337,12 @@ def run_pennylane(n_qubits, n_samples):
 # 3. Mahout Parquet Pipeline
 # -----------------------------------------------------------
 def run_mahout_parquet(engine, n_qubits, n_samples):
+    """
+    Run Mahout Parquet benchmark pipeline.
+
+    Returns:
+        tuple: (total_time, state_tensor, timing_tracker)
+    """
     # Clean cache before starting benchmark
     clean_cache()
 
@@ -385,6 +403,12 @@ def run_mahout_parquet(engine, n_qubits, n_samples):
 # 4. Mahout Arrow IPC Pipeline
 # -----------------------------------------------------------
 def run_mahout_arrow(engine, n_qubits, n_samples):
+    """
+    Run Mahout Arrow IPC benchmark pipeline.
+
+    Returns:
+        tuple: (total_time, state_tensor, timing_tracker)
+    """
     # Clean cache before starting benchmark
     clean_cache()
 
