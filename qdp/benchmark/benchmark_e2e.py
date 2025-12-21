@@ -539,11 +539,7 @@ if __name__ == "__main__":
 
     # Initialize results
     t_pl, pl_all_states, timing_pl = 0.0, None, None
-    t_mahout_parquet, mahout_parquet_all_states, timing_mahout_parquet = (
-        0.0,
-        None,
-        None,
-    )
+    t_mahout_parquet, mahout_parquet_all_states, timing_mahout_parquet = 0.0, None, None
     t_mahout_arrow, mahout_arrow_all_states, timing_mahout_arrow = 0.0, None, None
     t_qiskit, qiskit_all_states, timing_qiskit = 0.0, None, None
 
@@ -561,11 +557,9 @@ if __name__ == "__main__":
         clean_cache()
 
     if "mahout-parquet" in args.frameworks:
-        (
-            t_mahout_parquet,
-            mahout_parquet_all_states,
-            timing_mahout_parquet,
-        ) = run_mahout_parquet(engine, args.qubits, args.samples)
+        t_mahout_parquet, mahout_parquet_all_states, timing_mahout_parquet = (
+            run_mahout_parquet(engine, args.qubits, args.samples)
+        )
         # Clean cache between framework benchmarks
         clean_cache()
 
