@@ -4,7 +4,7 @@ This directory contains tests to verify that CPU-based code paths emit warnings 
 
 ## Running Tests
 
-These tests require a CUDA-enabled environment. To run them:
+These tests verify that warnings are logged when CPU-based preprocessing functions are called. The tests themselves don't require CUDA since they only test the CPU code paths.
 
 ```bash
 # Run with warning output visible
@@ -13,6 +13,8 @@ RUST_LOG=warn cargo test test_cpu_l2_norm_emits_warning -- --nocapture
 # Run batch warning test
 RUST_LOG=warn cargo test test_cpu_batch_l2_norms_emits_warning -- --nocapture
 ```
+
+Note: While these specific tests don't require CUDA, the full qdp-core test suite does require a CUDA-enabled environment because other tests interact with GPU kernels.
 
 ## Expected Output
 

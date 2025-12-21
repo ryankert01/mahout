@@ -63,6 +63,9 @@ impl Preprocessor {
     /// Calculates L2 norm of the input data in parallel on the CPU.
     ///
     /// Returns error if the calculated norm is zero.
+    /// 
+    /// Note: This function always emits a warning because it represents a CPU fallback path.
+    /// The caller should decide whether to use this or the GPU alternative based on data size.
     pub fn calculate_l2_norm(host_data: &[f64]) -> Result<f64> {
         log::warn!(
             "Using CPU-based L2 norm calculation instead of GPU kernel. \
@@ -113,6 +116,9 @@ impl Preprocessor {
     }
 
     /// Calculates L2 norms for a batch of samples in parallel.
+    /// 
+    /// Note: This function always emits a warning because it represents a CPU-based path
+    /// when a GPU kernel alternative is available.
     pub fn calculate_batch_l2_norms(
         batch_data: &[f64],
         _num_samples: usize,
