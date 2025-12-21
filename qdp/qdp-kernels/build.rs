@@ -37,10 +37,24 @@ fn main() {
         .is_ok();
 
     if !has_cuda {
-        println!("cargo:warning=CUDA not found (nvcc not in PATH). Skipping kernel compilation.");
-        println!("cargo:warning=This is expected on macOS or non-CUDA environments.");
-        println!("cargo:warning=The project will build, but GPU functionality will not be available.");
-        println!("cargo:warning=For production deployment, ensure CUDA toolkit is installed.");
+        eprintln!("ERROR: CUDA not found (nvcc not in PATH).");
+        eprintln!("This project requires CUDA toolkit to be installed.");
+        eprintln!("");
+        eprintln!("To fix this:");
+        eprintln!("1. Install CUDA toolkit: https://developer.nvidia.com/cuda-downloads");
+        eprintln!("2. Ensure 'nvcc' is in your PATH");
+        eprintln!("3. Verify with: nvcc --version");
+        eprintln!("");
+        eprintln!("For development on non-CUDA systems (e.g., macOS),");
+        eprintln!("set ALLOW_CPU_BUILD=1 to bypass this check.");
+        
+        // Allow override for development environments
+        if env::var("ALLOW_CPU_BUILD").is_err() {
+            panic!("Build failed: CUDA toolkit is required. Set ALLOW_CPU_BUILD=1 to override.");
+        }
+        
+        println!("cargo:warning=Building without CUDA (ALLOW_CPU_BUILD=1 set).");
+        println!("cargo:warning=GPU functionality will NOT be available.");
         return;
     }
 

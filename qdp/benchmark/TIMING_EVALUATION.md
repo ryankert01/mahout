@@ -184,9 +184,10 @@ When Mahout is using GPU correctly:
 - If GPU Utilization stays at 0% during encoding, there may be an installation issue
 
 **Common issues:**
-- If built without CUDA support, Mahout will silently fall back to CPU
-- Ensure `nvcc --version` works before building
+- **As of the latest update**, the build will fail if CUDA is not found, preventing CPU-only builds
+- If you see "Build failed: CUDA toolkit is required", ensure `nvcc --version` works
 - After any CUDA changes, run `cargo clean` then rebuild with `maturin develop`
+- For development on non-CUDA systems, use `ALLOW_CPU_BUILD=1 maturin develop`
 
 ## Requirements
 

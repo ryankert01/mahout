@@ -115,9 +115,14 @@ A: Ensure you're using the correct Python environment where the package was inst
 
 A: Ensure CUDA toolkit is properly installed and `nvcc` is in PATH. Try `cargo clean` and rebuild.
 
-### Q: I already installed CUDA driver and toolkit, making sure nvcc exists in PATH, but still get "no CUDA installed" warning
+**Note:** As of the latest update, the build will **fail if CUDA is not found** to prevent accidentally building a CPU-only version. If you need to build on a development machine without CUDA (e.g., macOS), set `ALLOW_CPU_BUILD=1`:
+```bash
+ALLOW_CPU_BUILD=1 maturin develop
+```
 
-A: Run `cargo clean` to clean up the cache and try again.
+### Q: I already installed CUDA driver and toolkit, making sure nvcc exists in PATH, but still get "Build failed: CUDA toolkit is required" error
+
+A: Run `cargo clean` to clean up the cache and try again. Verify `nvcc --version` works in your terminal.
 
 ### Q: Runtime CUDA errors like "invalid device ordinal" or "out of memory"
 
