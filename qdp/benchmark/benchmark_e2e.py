@@ -207,7 +207,7 @@ def run_qiskit(n_qubits, n_samples):
         )
         all_qiskit_states.append(gpu_tensor)
         timing.record("4. GPU Transfer", time.perf_counter() - transfer_start)
-        
+
         # Forward pass
         forward_start = time.perf_counter()
         _ = model(gpu_tensor.abs())
@@ -546,8 +546,8 @@ if __name__ == "__main__":
         clean_cache()
 
     if "mahout-arrow" in args.frameworks:
-        t_mahout_arrow, mahout_arrow_all_states, timing_mahout_arrow = (
-            run_mahout_arrow(engine, args.qubits, args.samples)
+        t_mahout_arrow, mahout_arrow_all_states, timing_mahout_arrow = run_mahout_arrow(
+            engine, args.qubits, args.samples
         )
         # Clean cache between framework benchmarks
         clean_cache()
@@ -599,9 +599,7 @@ if __name__ == "__main__":
 
     # Filter to only frameworks that were run
     active_timings = {
-        name: timing
-        for name, timing in timings_dict.items()
-        if timing is not None
+        name: timing for name, timing in timings_dict.items() if timing is not None
     }
 
     for timing in active_timings.values():
