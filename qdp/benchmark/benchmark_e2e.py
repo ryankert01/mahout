@@ -40,6 +40,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import pyarrow.ipc as ipc
 from mahout_qdp import QdpEngine
+from collections import defaultdict
 
 # Competitors
 try:
@@ -62,6 +63,31 @@ DATA_FILE = "final_benchmark_data.parquet"
 ARROW_FILE = "final_benchmark_data.arrow"
 HIDDEN_DIM = 16
 BATCH_SIZE = 64  # Small batch to stress loop overhead
+
+
+class TimingTracker:
+    """Helper class to track timing of different components."""
+
+    def __init__(self):
+        self.timings = defaultdict(float)
+
+    def record(self, component, duration):
+        """Record time for a component."""
+        self.timings[component] += duration
+
+    def get(self, component):
+        """Get time for a component."""
+        return self.timings.get(component, 0.0)
+
+    def print_breakdown(self, framework_name):
+        """Print timing breakdown."""
+        print(f"\n  === {framework_name} Component Breakdown ===")
+        total = sum(self.timings.values())
+        for component in sorted(self.timings.keys()):
+            time_val = self.timings[component]
+            pct = (time_val / total * 100) if total > 0 else 0
+            print(f"  {component:25s} {time_val:8.4f} s ({pct:5.1f}%)")
+        print(f"  {'Total':25s} {total:8.4f} s (100.0%)")
 
 
 def clean_cache():
@@ -121,12 +147,13 @@ def generate_data(n_qubits, n_samples):
 def run_qiskit(n_qubits, n_samples):
     if not HAS_QISKIT:
         print("\n[Qiskit] Not installed, skipping.")
-        return 0.0, None
+        return 0.0, None, None
 
     # Clean cache before starting benchmark
     clean_cache()
 
     print("\n[Qiskit] Full Pipeline (Disk -> GPU)...")
+    timing = TimingTracker()
     model = DummyQNN(n_qubits).cuda()
     backend = AerSimulator(method="statevector")
 
@@ -134,25 +161,32 @@ def run_qiskit(n_qubits, n_samples):
     start_time = time.perf_counter()
 
     # IO
+    io_start = time.perf_counter()
     import pandas as pd
 
     df = pd.read_parquet(DATA_FILE)
     raw_data = np.stack(df["feature_vector"].values)
-    io_time = time.perf_counter() - start_time
+    io_time = time.perf_counter() - io_start
+    timing.record("1. IO (Disk Read)", io_time)
     print(f"  IO Time: {io_time:.4f} s")
 
     all_qiskit_states = []
+    normalize_time_total = 0.0
+    encode_time_total = 0.0
 
     # Process batches
     for i in range(0, n_samples, BATCH_SIZE):
         batch = raw_data[i : i + BATCH_SIZE]
 
         # Normalize
+        norm_start = time.perf_counter()
         norms = np.linalg.norm(batch, axis=1, keepdims=True)
         norms[norms == 0] = 1.0
         batch = batch / norms
+        normalize_time_total += time.perf_counter() - norm_start
 
         # State preparation
+        encode_start = time.perf_counter()
         batch_states = []
         for vec_idx, vec in enumerate(batch):
             qc = QuantumCircuit(n_qubits)
@@ -164,13 +198,23 @@ def run_qiskit(n_qubits, n_samples):
 
             if (vec_idx + 1) % 10 == 0:
                 print(f"    Processed {vec_idx + 1}/{len(batch)} vectors...", end="\r")
+        encode_time_total += time.perf_counter() - encode_start
 
         # Transfer to GPU
+        transfer_start = time.perf_counter()
         gpu_tensor = torch.tensor(
             np.array(batch_states), device="cuda", dtype=torch.complex64
         )
         all_qiskit_states.append(gpu_tensor)
+        timing.record("4. GPU Transfer", time.perf_counter() - transfer_start)
+        
+        # Forward pass
+        forward_start = time.perf_counter()
         _ = model(gpu_tensor.abs())
+        timing.record("5. Forward Pass", time.perf_counter() - forward_start)
+
+    timing.record("2. Normalization", normalize_time_total)
+    timing.record("3. Encoding (State Prep)", encode_time_total)
 
     torch.cuda.synchronize()
     total_time = time.perf_counter() - start_time
@@ -178,10 +222,13 @@ def run_qiskit(n_qubits, n_samples):
 
     all_qiskit_tensor = torch.cat(all_qiskit_states, dim=0)
 
+    # Print timing breakdown
+    timing.print_breakdown("Qiskit")
+
     # Clean cache after benchmark completion
     clean_cache()
 
-    return total_time, all_qiskit_tensor
+    return total_time, all_qiskit_tensor, timing
 
 
 # -----------------------------------------------------------
@@ -190,12 +237,13 @@ def run_qiskit(n_qubits, n_samples):
 def run_pennylane(n_qubits, n_samples):
     if not HAS_PENNYLANE:
         print("\n[PennyLane] Not installed, skipping.")
-        return 0.0, None
+        return 0.0, None, None
 
     # Clean cache before starting benchmark
     clean_cache()
 
     print("\n[PennyLane] Full Pipeline (Disk -> GPU)...")
+    timing = TimingTracker()
 
     dev = qml.device("default.qubit", wires=n_qubits)
 
@@ -212,30 +260,48 @@ def run_pennylane(n_qubits, n_samples):
     start_time = time.perf_counter()
 
     # IO
+    io_start = time.perf_counter()
     import pandas as pd
 
     df = pd.read_parquet(DATA_FILE)
     raw_data = np.stack(df["feature_vector"].values)
-    io_time = time.perf_counter() - start_time
+    io_time = time.perf_counter() - io_start
+    timing.record("1. IO (Disk Read)", io_time)
     print(f"  IO Time: {io_time:.4f} s")
 
     all_pl_states = []
+    encode_time_total = 0.0
+    transfer_time_total = 0.0
+    forward_time_total = 0.0
 
     # Process batches
     for i in range(0, n_samples, BATCH_SIZE):
+        # Data prep (CPU tensor creation)
         batch_cpu = torch.tensor(raw_data[i : i + BATCH_SIZE])
 
-        # Execute QNode
+        # Execute QNode (encoding happens here, includes normalization)
+        encode_start = time.perf_counter()
         try:
             state_cpu = circuit(batch_cpu)
         except Exception:
             state_cpu = torch.stack([circuit(x) for x in batch_cpu])
+        encode_time_total += time.perf_counter() - encode_start
 
         all_pl_states.append(state_cpu)
 
         # Transfer to GPU
+        transfer_start = time.perf_counter()
         state_gpu = state_cpu.to("cuda", dtype=torch.float32)
+        transfer_time_total += time.perf_counter() - transfer_start
+
+        # Forward pass
+        forward_start = time.perf_counter()
         _ = model(state_gpu.abs())
+        forward_time_total += time.perf_counter() - forward_start
+
+    timing.record("2. Encoding (with Norm)", encode_time_total)
+    timing.record("3. GPU Transfer", transfer_time_total)
+    timing.record("4. Forward Pass", forward_time_total)
 
     torch.cuda.synchronize()
     total_time = time.perf_counter() - start_time
@@ -246,10 +312,13 @@ def run_pennylane(n_qubits, n_samples):
         all_pl_states, dim=0
     )  # Should handle cases where last batch is smaller
 
+    # Print timing breakdown
+    timing.print_breakdown("PennyLane")
+
     # Clean cache after benchmark completion
     clean_cache()
 
-    return total_time, all_pl_states_tensor
+    return total_time, all_pl_states_tensor, timing
 
 
 # -----------------------------------------------------------
@@ -260,21 +329,24 @@ def run_mahout_parquet(engine, n_qubits, n_samples):
     clean_cache()
 
     print("\n[Mahout-Parquet] Full Pipeline (Parquet -> GPU)...")
+    timing = TimingTracker()
     model = DummyQNN(n_qubits).cuda()
 
     torch.cuda.synchronize()
     start_time = time.perf_counter()
 
-    # Direct Parquet to GPU pipeline
+    # Direct Parquet to GPU pipeline (IO + Encode combined)
     parquet_encode_start = time.perf_counter()
     batched_tensor = engine.encode_from_parquet(DATA_FILE, n_qubits, "amplitude")
     parquet_encode_time = time.perf_counter() - parquet_encode_start
+    timing.record("1. IO + Encoding", parquet_encode_time)
     print(f"  Parquet->GPU (IO+Encode): {parquet_encode_time:.4f} s")
 
     # Convert to torch tensor (single DLPack call)
     dlpack_start = time.perf_counter()
     gpu_batched = torch.from_dlpack(batched_tensor)
     dlpack_time = time.perf_counter() - dlpack_start
+    timing.record("2. DLPack Conversion", dlpack_time)
     print(f"  DLPack conversion: {dlpack_time:.4f} s")
 
     # Reshape to [n_samples, state_len] (still complex)
@@ -285,21 +357,28 @@ def run_mahout_parquet(engine, n_qubits, n_samples):
     gpu_reshaped = gpu_batched.view(n_samples, state_len)
     gpu_all_data = gpu_reshaped.abs().to(torch.float32)
     reshape_time = time.perf_counter() - reshape_start
+    timing.record("3. Reshape & Convert", reshape_time)
     print(f"  Reshape & convert: {reshape_time:.4f} s")
 
     # Forward pass (data already on GPU)
+    forward_start = time.perf_counter()
     for i in range(0, n_samples, BATCH_SIZE):
         batch = gpu_all_data[i : i + BATCH_SIZE]
         _ = model(batch)
+    forward_time = time.perf_counter() - forward_start
+    timing.record("4. Forward Pass", forward_time)
 
     torch.cuda.synchronize()
     total_time = time.perf_counter() - start_time
     print(f"  Total Time: {total_time:.4f} s")
 
+    # Print timing breakdown
+    timing.print_breakdown("Mahout-Parquet")
+
     # Clean cache after benchmark completion
     clean_cache()
 
-    return total_time, gpu_reshaped
+    return total_time, gpu_reshaped, timing
 
 
 # -----------------------------------------------------------
@@ -310,6 +389,7 @@ def run_mahout_arrow(engine, n_qubits, n_samples):
     clean_cache()
 
     print("\n[Mahout-Arrow] Full Pipeline (Arrow IPC -> GPU)...")
+    timing = TimingTracker()
     model = DummyQNN(n_qubits).cuda()
 
     torch.cuda.synchronize()
@@ -318,11 +398,13 @@ def run_mahout_arrow(engine, n_qubits, n_samples):
     arrow_encode_start = time.perf_counter()
     batched_tensor = engine.encode_from_arrow_ipc(ARROW_FILE, n_qubits, "amplitude")
     arrow_encode_time = time.perf_counter() - arrow_encode_start
+    timing.record("1. IO + Encoding", arrow_encode_time)
     print(f"  Arrow->GPU (IO+Encode): {arrow_encode_time:.4f} s")
 
     dlpack_start = time.perf_counter()
     gpu_batched = torch.from_dlpack(batched_tensor)
     dlpack_time = time.perf_counter() - dlpack_start
+    timing.record("2. DLPack Conversion", dlpack_time)
     print(f"  DLPack conversion: {dlpack_time:.4f} s")
 
     state_len = 1 << n_qubits
@@ -331,20 +413,27 @@ def run_mahout_arrow(engine, n_qubits, n_samples):
     gpu_reshaped = gpu_batched.view(n_samples, state_len)
     gpu_all_data = gpu_reshaped.abs().to(torch.float32)
     reshape_time = time.perf_counter() - reshape_start
+    timing.record("3. Reshape & Convert", reshape_time)
     print(f"  Reshape & convert: {reshape_time:.4f} s")
 
+    forward_start = time.perf_counter()
     for i in range(0, n_samples, BATCH_SIZE):
         batch = gpu_all_data[i : i + BATCH_SIZE]
         _ = model(batch)
+    forward_time = time.perf_counter() - forward_start
+    timing.record("4. Forward Pass", forward_time)
 
     torch.cuda.synchronize()
     total_time = time.perf_counter() - start_time
     print(f"  Total Time: {total_time:.4f} s")
 
+    # Print timing breakdown
+    timing.print_breakdown("Mahout-Arrow")
+
     # Clean cache after benchmark completion
     clean_cache()
 
-    return total_time, gpu_reshaped
+    return total_time, gpu_reshaped, timing
 
 
 def compare_states(name_a, states_a, name_b, states_b):
@@ -425,32 +514,40 @@ if __name__ == "__main__":
     print("=" * 70)
 
     # Initialize results
-    t_pl, pl_all_states = 0.0, None
-    t_mahout_parquet, mahout_parquet_all_states = 0.0, None
-    t_mahout_arrow, mahout_arrow_all_states = 0.0, None
-    t_qiskit, qiskit_all_states = 0.0, None
+    t_pl, pl_all_states, timing_pl = 0.0, None, None
+    t_mahout_parquet, mahout_parquet_all_states, timing_mahout_parquet = (
+        0.0,
+        None,
+        None,
+    )
+    t_mahout_arrow, mahout_arrow_all_states, timing_mahout_arrow = 0.0, None, None
+    t_qiskit, qiskit_all_states, timing_qiskit = 0.0, None, None
 
     # Run benchmarks
     if "pennylane" in args.frameworks:
-        t_pl, pl_all_states = run_pennylane(args.qubits, args.samples)
+        t_pl, pl_all_states, timing_pl = run_pennylane(args.qubits, args.samples)
         # Clean cache between framework benchmarks
         clean_cache()
 
     if "qiskit" in args.frameworks:
-        t_qiskit, qiskit_all_states = run_qiskit(args.qubits, args.samples)
-        # Clean cache between framework benchmarks
-        clean_cache()
-
-    if "mahout-parquet" in args.frameworks:
-        t_mahout_parquet, mahout_parquet_all_states = run_mahout_parquet(
-            engine, args.qubits, args.samples
+        t_qiskit, qiskit_all_states, timing_qiskit = run_qiskit(
+            args.qubits, args.samples
         )
         # Clean cache between framework benchmarks
         clean_cache()
 
+    if "mahout-parquet" in args.frameworks:
+        (
+            t_mahout_parquet,
+            mahout_parquet_all_states,
+            timing_mahout_parquet,
+        ) = run_mahout_parquet(engine, args.qubits, args.samples)
+        # Clean cache between framework benchmarks
+        clean_cache()
+
     if "mahout-arrow" in args.frameworks:
-        t_mahout_arrow, mahout_arrow_all_states = run_mahout_arrow(
-            engine, args.qubits, args.samples
+        t_mahout_arrow, mahout_arrow_all_states, timing_mahout_arrow = (
+            run_mahout_arrow(engine, args.qubits, args.samples)
         )
         # Clean cache between framework benchmarks
         clean_cache()
@@ -484,6 +581,57 @@ if __name__ == "__main__":
             print(f"Speedup vs PennyLane: {t_pl / t_mahout_best:10.2f}x")
         if t_qiskit > 0:
             print(f"Speedup vs Qiskit:    {t_qiskit / t_mahout_best:10.2f}x")
+
+    # Print comprehensive component comparison table
+    print("\n" + "=" * 70)
+    print("COMPONENT TIMING COMPARISON")
+    print(f"Samples: {args.samples}, Qubits: {args.qubits}")
+    print("=" * 70)
+
+    # Collect all unique components from all timings
+    all_components = set()
+    timings_dict = {
+        "Mahout-Parquet": timing_mahout_parquet,
+        "Mahout-Arrow": timing_mahout_arrow,
+        "PennyLane": timing_pl,
+        "Qiskit": timing_qiskit,
+    }
+
+    # Filter to only frameworks that were run
+    active_timings = {
+        name: timing
+        for name, timing in timings_dict.items()
+        if timing is not None
+    }
+
+    for timing in active_timings.values():
+        all_components.update(timing.timings.keys())
+
+    # Print header
+    header = f"{'Component':<30s}"
+    for name in active_timings.keys():
+        header += f" {name:>15s}"
+    print(header)
+    print("-" * 70)
+
+    # Print each component
+    for component in sorted(all_components):
+        row = f"{component:<30s}"
+        for name, timing in active_timings.items():
+            time_val = timing.get(component)
+            if time_val > 0:
+                row += f" {time_val:>13.4f}s"
+            else:
+                row += f" {'-':>15s}"
+        print(row)
+
+    # Print totals
+    print("-" * 70)
+    totals_row = f"{'TOTAL':<30s}"
+    for name, timing in active_timings.items():
+        total = sum(timing.timings.values())
+        totals_row += f" {total:>13.4f}s"
+    print(totals_row)
 
     # Run Verification after benchmarks
     verify_correctness(
