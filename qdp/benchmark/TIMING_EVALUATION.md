@@ -128,6 +128,47 @@ The Mahout framework's advantage comes from:
 - Minimal data transfer overhead (DLPack zero-copy when possible)
 - Efficient quantum state preparation kernels
 
+## Understanding GPU Usage
+
+**Which frameworks use GPU for quantum encoding?**
+
+- **Mahout (Parquet/Arrow)**: ✅ GPU-accelerated quantum encoding via CUDA kernels
+  - Encoding happens on GPU (this is the main advantage)
+  - Only minimal CPU usage for coordination
+
+- **PennyLane**: ❌ CPU-based quantum encoding
+  - Quantum state preparation happens on CPU
+  - Data is transferred to GPU only for the neural network forward pass
+  - Expect high CPU usage during encoding phase
+
+- **Qiskit**: ❌ CPU-based quantum encoding
+  - Quantum state preparation happens on CPU via AerSimulator
+  - Data is transferred to GPU only for the neural network forward pass
+  - Expect high CPU usage during encoding phase
+
+**To maximize GPU usage:**
+```bash
+# Run ONLY Mahout frameworks (exclude PennyLane and Qiskit)
+CUDA_VISIBLE_DEVICES=1 ./benchmark_e2e.py --qubits 18 --samples 500 --frameworks mahout-parquet
+
+# Or both Mahout variants for comparison
+CUDA_VISIBLE_DEVICES=1 ./benchmark_e2e.py --qubits 18 --samples 500 --frameworks mahout-parquet mahout-arrow
+```
+
+**Verify GPU usage:**
+- Check the component timing breakdown
+- Mahout's "IO + Encoding" should be 5-10x faster than PennyLane's "Encoding (with Norm)"
+- If timings are similar, there may be an installation issue
+
+**Troubleshooting:**
+```bash
+# Verify Mahout QDP engine can access GPU
+python -c "from mahout_qdp import QdpEngine; engine = QdpEngine(0); print('GPU initialized successfully')"
+
+# Check CUDA is available to PyTorch
+python -c "import torch; print(f'CUDA available: {torch.cuda.is_available()}, Device: {torch.cuda.get_device_name(0) if torch.cuda.is_available() else \"None\"}')"
+```
+
 ## Requirements
 
 - NVIDIA GPU with CUDA support

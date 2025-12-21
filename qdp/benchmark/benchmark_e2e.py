@@ -26,6 +26,14 @@ Scope:
 5. Consumption: 1 dummy Forward Pass to ensure data is usable.
 
 This is the most realistic comparison for a "Cold Start" Training Epoch.
+
+GPU Usage Notes:
+- Mahout: Quantum encoding happens on GPU (CUDA kernels)
+- PennyLane/Qiskit: Quantum encoding happens on CPU (framework limitation)
+  Only the neural network forward pass uses GPU for these frameworks.
+
+To maximize GPU usage, run only Mahout frameworks:
+  ./benchmark_e2e.py --qubits 18 --samples 500 --frameworks mahout-parquet
 """
 
 import time
