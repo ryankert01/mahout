@@ -18,9 +18,21 @@
 //!
 //! This module contains concrete implementations of the [`DataReader`] and
 //! [`StreamingDataReader`] traits for various file formats.
+//!
+//! # Fully Implemented Formats
+//! - **Parquet**: [`ParquetReader`], [`ParquetStreamingReader`]
+//! - **Arrow IPC**: [`ArrowIPCReader`]
+//!
+//! # Placeholder Formats (for demonstration)
+//! - **NumPy**: [`NumpyReader`] - See [`docs/ADDING_INPUT_FORMATS.md`](../../docs/ADDING_INPUT_FORMATS.md)
+//! - **PyTorch**: [`TorchReader`] - See [`docs/ADDING_INPUT_FORMATS.md`](../../docs/ADDING_INPUT_FORMATS.md)
 
 pub mod parquet;
 pub mod arrow_ipc;
+pub mod numpy;
+pub mod torch;
 
 pub use parquet::{ParquetReader, ParquetStreamingReader};
 pub use arrow_ipc::ArrowIPCReader;
+pub use numpy::NumpyReader;
+pub use torch::TorchReader;
