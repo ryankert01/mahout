@@ -19,10 +19,11 @@
 //! Run: cargo run -p qdp-core --example flexible_readers
 
 use qdp_core::reader::DataReader;
-use qdp_core::readers::{ArrowIPCReader};
+use qdp_core::readers::{ArrowIPCReader, NumpyReader};
 use arrow::array::{Float64Array, FixedSizeListArray, ListBuilder};
 use arrow::datatypes::{DataType, Field, Schema};
 use arrow::ipc::writer::FileWriter as ArrowFileWriter;
+use ndarray::Array2;
 use std::fs::File;
 use std::sync::Arc;
 
@@ -121,8 +122,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("  Read {} samples of size {}", samples, size);
     println!("  First sample: {:?}", &data[0..size]);
 
-    // === Example 3: Demonstrating Generic Reader Usage ===
-    println!("\n[Example 3] Using readers polymorphically...");
+    // === Example 3: NumPy Format ===
+    println!("\n[Example 3] Writing and reading NumPy format...");
+    
+    let numpy_path = "/tmp/quantum_states.npy";
+    
+    // Create and write NumPy array
+    let array = Array2::from_shape_vec((num_samples, sample_size), all_data.clone())?;
+    ndarray_npy::write_npy(numpy_path, &array)?;
+    println!("  Written to: {}", numpy_path);
+
+    let mut numpy_reader = NumpyReader::new(numpy_path)?;
+    let (data, samples, size) = numpy_reader.read_batch()?;
+    println!("  Read {} samples of size {}", samples, size);
+    println!("  First sample: {:?}", &data[0..size]);
+
+    // === Example 4: Demonstrating Generic Reader Usage ===
+    println!("\n[Example 4] Using readers polymorphically...");
     
     fn process_with_any_reader<R: DataReader>(mut reader: R, format_name: &str) 
         -> Result<(), Box<dyn std::error::Error>> 
@@ -139,14 +155,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let arrow_reader = ArrowIPCReader::new(arrow_list_path)?;
     process_with_any_reader(arrow_reader, "Arrow IPC (List)")?;
 
-    // === Example 4: Format Detection Pattern ===
-    println!("\n[Example 4] Automatic format detection pattern...");
+    let numpy_reader = NumpyReader::new(numpy_path)?;
+    process_with_any_reader(numpy_reader, "NumPy")?;
+
+    // === Example 5: Format Detection Pattern ===
+    println!("\n[Example 5] Automatic format detection pattern...");
     
     fn read_any_format(path: &str) -> Result<(Vec<f64>, usize, usize), Box<dyn std::error::Error>> {
         if path.ends_with(".parquet") {
             Err("Parquet needs List<Float64> format - use write_parquet_batch helper".into())
         } else if path.ends_with(".arrow") || path.ends_with(".feather") {
             let mut reader = ArrowIPCReader::new(path)?;
+            Ok(reader.read_batch()?)
+        } else if path.ends_with(".npy") {
+            let mut reader = NumpyReader::new(path)?;
             Ok(reader.read_batch()?)
         } else {
             Err("Unsupported format".into())
@@ -159,13 +181,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (_, samples, size) = read_any_format(arrow_list_path)?;
     println!("  Auto-detected Arrow (List): {} samples × {}", samples, size);
 
+    let (_, samples, size) = read_any_format(numpy_path)?;
+    println!("  Auto-detected NumPy: {} samples × {}", samples, size);
+
     println!("\n=== Demo Complete ===");
     println!("\nKey Takeaways:");
     println!("  1. Different formats implement the same DataReader trait");
     println!("  2. Readers can be used polymorphically via trait objects");
     println!("  3. Easy to add new formats without changing existing code");
     println!("  4. Format detection can be handled at a higher level");
-    println!("  5. Both FixedSizeList and List formats are supported");
+    println!("  5. Arrow FixedSizeList, List, and NumPy formats are supported");
     println!("\nSee docs/ADDING_INPUT_FORMATS.md for how to add new formats!");
 
     Ok(())
