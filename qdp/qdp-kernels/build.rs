@@ -40,6 +40,16 @@ fn main() {
             "cargo:warning=The project will build, but GPU functionality will not be available."
         );
         println!("cargo:warning=For production deployment, ensure CUDA toolkit is installed.");
+        
+        // Compile stub implementations when CUDA is not available on Linux
+        // This prevents undefined symbol errors when the module is loaded
+        // Note: Non-Linux platforms use dummy implementations from lib.rs
+        #[cfg(target_os = "linux")]
+        {
+            cc::Build::new()
+                .file("src/stubs.c")
+                .compile("kernels_stubs");
+        }
         return;
     }
 
