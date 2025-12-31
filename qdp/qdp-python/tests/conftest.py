@@ -16,6 +16,7 @@
 
 """Pytest configuration for Mahout QDP Python tests."""
 
+import sys
 import pytest
 
 
@@ -33,15 +34,14 @@ def pytest_collection_modifyitems(config, items):
     try:
         import mahout_qdp
         # Try to create a QdpEngine instance to check if CUDA runtime is available
-        try:
-            _ = mahout_qdp.QdpEngine(device_id=0)
-            cuda_available = True
-        except BaseException:
-            # QdpEngine initialization failed, CUDA not available
-            # Using BaseException to catch PanicException as well
-            cuda_available = False
-    except ImportError:
-        # Module import failed, likely due to missing CUDA
+        _ = mahout_qdp.QdpEngine(device_id=0)
+        cuda_available = True
+    except (SystemExit, KeyboardInterrupt):
+        # Re-raise critical system exceptions that should never be caught
+        raise
+    except:  # noqa: E722 - Intentionally broad to catch PanicException from cudarc
+        # Module import or QdpEngine initialization failed, CUDA not available
+        # Using bare except to catch PyO3 PanicException which isn't a standard Exception
         cuda_available = False
 
     if not cuda_available:

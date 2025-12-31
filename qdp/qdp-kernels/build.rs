@@ -41,8 +41,9 @@ fn main() {
         );
         println!("cargo:warning=For production deployment, ensure CUDA toolkit is installed.");
         
-        // Compile stub implementations when CUDA is not available
+        // Compile stub implementations when CUDA is not available on Linux
         // This prevents undefined symbol errors when the module is loaded
+        // Note: Non-Linux platforms use dummy implementations from lib.rs
         #[cfg(target_os = "linux")]
         {
             cc::Build::new()
