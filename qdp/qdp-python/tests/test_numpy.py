@@ -21,9 +21,11 @@ import tempfile
 import os
 import numpy as np
 import torch
+import pytest
 from mahout_qdp import QdpEngine
 
 
+@pytest.mark.gpu
 def test_encode_from_numpy_basic():
     """Test basic NumPy file encoding"""
     engine = QdpEngine(device_id=0)
@@ -73,6 +75,7 @@ def test_encode_from_numpy_basic():
             os.remove(npy_path)
 
 
+@pytest.mark.gpu
 def test_encode_from_numpy_large():
     """Test NumPy encoding with larger dataset"""
     engine = QdpEngine(device_id=0)
@@ -108,6 +111,7 @@ def test_encode_from_numpy_large():
             os.remove(npy_path)
 
 
+@pytest.mark.gpu
 def test_encode_from_numpy_single_sample():
     """Test NumPy encoding with single sample"""
     engine = QdpEngine(device_id=0)
