@@ -22,7 +22,7 @@ benchmark timing measurements, including mean, median, standard deviation,
 percentiles, and outlier detection.
 """
 
-from typing import Dict, List, Union
+from typing import Dict, List, Tuple, Union
 
 import numpy as np
 
@@ -150,7 +150,7 @@ def filter_outliers(
 def compute_confidence_interval(
     timings: List[float],
     confidence: float = 0.95,
-) -> tuple[float, float]:
+) -> Tuple[float, float]:
     """
     Compute confidence interval for the mean.
 
