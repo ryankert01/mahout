@@ -41,7 +41,7 @@ class TestPathExists:
 
     def test_path_exists_with_nonexistent_path(self):
         """Test that path_exists returns False for a nonexistent path."""
-        nonexistent_path = "/tmp/nonexistent_file_12345.txt"
+        nonexistent_path = Path(tempfile.gettempdir()) / "nonexistent_file_12345.txt"
         assert path_exists(nonexistent_path) is False
 
     def test_path_exists_with_string_path(self):
@@ -79,7 +79,7 @@ class TestEnsureFileExists:
 
     def test_ensure_file_exists_with_nonexistent_file(self):
         """Test that ensure_file_exists raises FileNotFoundError for nonexistent file."""
-        nonexistent_path = "/tmp/nonexistent_file_12345.txt"
+        nonexistent_path = Path(tempfile.gettempdir()) / "nonexistent_file_12345.txt"
         with pytest.raises(FileNotFoundError, match="File not found"):
             ensure_file_exists(nonexistent_path)
 
