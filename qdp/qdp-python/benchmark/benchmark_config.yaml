@@ -1,0 +1,69 @@
+# Benchmark configuration for fair comparison
+# This file demonstrates the configuration format for Apache Mahout QDP benchmarks
+
+fairness:
+  # Number of warmup iterations before timing measurements
+  # Recommended: 3-5 for small workloads, 1-2 for large workloads
+  warmup_iters: 3
+  
+  # Number of repeated measurements for statistical analysis
+  # Recommended: 20-50 for medium operations, 10-20 for slow operations
+  repeat_runs: 20
+  
+  # Whether to clear GPU cache between each measurement run
+  # false: Faster but may include cache effects (recommended for most benchmarks)
+  # true: Slower but more conservative measurements
+  clear_cache_between_runs: false
+  
+  # Use CUDA events for GPU timing (more accurate than time.perf_counter)
+  use_cuda_events: true
+
+statistics:
+  # Which percentiles to collect in statistical analysis
+  collect_percentiles: [25, 50, 75, 90, 95, 99]
+  
+  # Method for outlier detection: 'iqr' or 'zscore'
+  # iqr: Interquartile range method (recommended)
+  # zscore: Standard deviation method
+  outlier_detection: 'iqr'
+  
+  # Threshold for outlier detection
+  # For IQR: 1.5 is standard, 3.0 is very conservative
+  # For zscore: 3.0 is standard
+  outlier_threshold: 1.5
+
+visualization:
+  # Directory to save benchmark plots and tables
+  output_dir: './benchmark_results'
+  
+  # Output formats for plots
+  plot_formats: ['png', 'pdf']
+  
+  # DPI for publication-quality images
+  dpi: 300
+  
+  # Matplotlib style (see matplotlib.style.available for options)
+  style: 'seaborn-v0_8-paper'
+  
+  # Which plots to generate
+  plots:
+    - 'bar_chart'        # Bar chart with error bars
+    - 'box_plot'         # Box plot showing quartiles
+    - 'violin_plot'      # Violin plot showing distributions
+    - 'comparison_table' # Markdown table with statistics
+
+# Workload configurations for different benchmark scenarios
+workloads:
+  # End-to-end benchmark (disk to GPU)
+  e2e:
+    qubits: 16
+    samples: 200
+    frameworks: ['mahout-parquet', 'mahout-arrow', 'pennylane']
+  
+  # DataLoader throughput benchmark
+  throughput:
+    qubits: 16
+    batches: 200
+    batch_size: 64
+    prefetch: 16
+    frameworks: ['mahout', 'pennylane', 'qiskit']

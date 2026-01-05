@@ -145,6 +145,8 @@ Or follow the instructions in [test docs](./docs/test/README.md) to run unit tes
 
 The e2e and benchmark tests are located in the `qdp-python/benchmark` directory and are written in Python.
 
+> **📋 Benchmark Roadmap**: For planned improvements to benchmarking infrastructure including fairness, statistical measurements, and publication-ready visualizations, see [docs/BENCHMARK_ROADMAP.md](./docs/BENCHMARK_ROADMAP.md).
+
 First, ensure you set up the Python environment and install the mahout qdp package following the [Install as Python package](#install-as-python-package) section.
 
 To run all benchmark tests, use the make command from the `qdp/` directory:
