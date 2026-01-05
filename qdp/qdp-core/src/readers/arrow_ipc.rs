@@ -38,8 +38,23 @@ impl ArrowIPCReader {
     /// # Arguments
     /// * `path` - Path to the Arrow IPC file (.arrow or .feather)
     pub fn new<P: AsRef<Path>>(path: P) -> Result<Self> {
+        let path = path.as_ref();
+
+        // Check file size to prevent OOM
+        let metadata = std::fs::metadata(path).map_err(|e| {
+            MahoutError::Io(format!("Failed to get file metadata: {}", e))
+        })?;
+        
+        let file_size = metadata.len();
+        if file_size > crate::MAX_FILE_SIZE_BYTES {
+            return Err(MahoutError::InvalidInput(format!(
+                "Arrow IPC file too large: {} bytes (max: {} bytes). Consider using a streaming reader or processing the file in chunks.",
+                file_size, crate::MAX_FILE_SIZE_BYTES
+            )));
+        }
+
         Ok(Self {
-            path: path.as_ref().to_path_buf(),
+            path: path.to_path_buf(),
             read: false,
         })
     }
