@@ -46,7 +46,7 @@ cd qdp/qdp-python/benchmark
 python benchmark_e2e.py
 ```
 
-### Statistical Mode (Multiple Runs with Warmup) - NEW!
+### Statistical Mode (Multiple Runs with Warmup) - Phase 2
 
 ```bash
 # Run with statistical analysis
@@ -59,6 +59,28 @@ python benchmark_e2e.py --statistical --warmup 5 --repeat 20
 python benchmark_e2e.py --statistical --frameworks mahout-parquet pennylane
 ```
 
+### Visualization Mode (Publication-Ready Plots) - Phase 3 NEW!
+
+```bash
+# Generate visualizations with statistical mode
+python benchmark_e2e.py --statistical --visualize
+
+# Customize output directory
+python benchmark_e2e.py --statistical --visualize --output-dir ./my_results
+
+# Full example with all options
+python benchmark_e2e.py --statistical --visualize \
+  --warmup 5 --repeat 20 \
+  --frameworks mahout-parquet pennylane \
+  --output-dir ./benchmark_results
+```
+
+**Generates:**
+- Bar charts with error bars (mean ± std)
+- Box plots showing quartiles and outliers
+- Violin plots showing full distributions
+- Markdown tables with complete statistics
+
 Additional options:
 
 ```bash
@@ -70,6 +92,10 @@ python benchmark_e2e.py --frameworks all
 - `--statistical`: Enable statistical mode with warmup and multiple runs
 - `--warmup N`: Number of warmup iterations (default: 3)
 - `--repeat N`: Number of measurement iterations (default: 10)
+
+**New Flags** (Phase 3):
+- `--visualize`: Generate publication-ready plots (requires --statistical)
+- `--output-dir PATH`: Directory to save plots (default: ./benchmark_results)
 
 **Statistical mode provides:**
 - Warmup runs to eliminate JIT compilation overhead
@@ -104,7 +130,7 @@ python benchmark_throughput.py --qubits 16 --batches 200 --batch-size 64 --prefe
 python benchmark_throughput.py --frameworks mahout,pennylane
 ```
 
-### Statistical Mode (Multiple Runs with Warmup) - NEW!
+### Statistical Mode (Multiple Runs with Warmup) - Phase 2
 
 ```bash
 # Run with statistical analysis
@@ -117,10 +143,40 @@ python benchmark_throughput.py --statistical --warmup 2 --repeat 15
 python benchmark_throughput.py --statistical --frameworks mahout,pennylane
 ```
 
+### Visualization Mode (Publication-Ready Plots) - Phase 3 NEW!
+
+```bash
+# Generate visualizations with statistical mode
+python benchmark_throughput.py --statistical --visualize
+
+# Customize output directory
+python benchmark_throughput.py --statistical --visualize --output-dir ./my_results
+
+# Full example with all options
+python benchmark_throughput.py --statistical --visualize \
+  --warmup 2 --repeat 15 \
+  --frameworks mahout,pennylane \
+  --output-dir ./benchmark_results
+```
+
+**Generates TWO sets of plots:**
+1. **Duration plots**: Time taken for benchmark execution
+2. **Throughput plots**: Vectors processed per second
+
+**Each set includes:**
+- Bar charts with error bars
+- Box plots showing quartiles
+- Violin plots showing distributions
+- Markdown tables with statistics
+
 **New Flags** (Phase 2):
 - `--statistical`: Enable statistical mode with warmup and multiple runs
 - `--warmup N`: Number of warmup iterations (default: 2 for throughput)
 - `--repeat N`: Number of measurement iterations (default: 10)
+
+**New Flags** (Phase 3):
+- `--visualize`: Generate publication-ready plots (requires --statistical)
+- `--output-dir PATH`: Directory to save plots (default: ./benchmark_results)
 
 **Statistical mode provides:**
 - Warmup runs to eliminate JIT compilation overhead

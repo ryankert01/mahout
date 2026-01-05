@@ -51,6 +51,7 @@ try:
         benchmark_with_cuda_events,
         compute_statistics,
         format_statistics,
+        BenchmarkVisualizer,
     )
     HAS_BENCHMARK_UTILS = True
 except ImportError:
@@ -350,12 +351,33 @@ def main():
         default=10,
         help="Number of measurement iterations in statistical mode (default: 10)",
     )
+    parser.add_argument(
+        "--visualize",
+        action="store_true",
+        help="Generate visualization plots (requires --statistical and benchmark_utils)",
+    )
+    parser.add_argument(
+        "--output-dir",
+        type=str,
+        default="./benchmark_results",
+        help="Directory to save visualization plots (default: ./benchmark_results)",
+    )
     args = parser.parse_args()
     
     # Check if statistical mode is enabled but benchmark_utils is not available
     if args.statistical and not HAS_BENCHMARK_UTILS:
         print("Error: --statistical mode requires benchmark_utils package.")
         print("Make sure benchmark_utils is installed or accessible.")
+        sys.exit(1)
+    
+    # Check if visualize is enabled without statistical mode
+    if args.visualize and not args.statistical:
+        print("Error: --visualize requires --statistical mode.")
+        print("Run with both --statistical and --visualize flags.")
+        sys.exit(1)
+    
+    if args.visualize and not HAS_BENCHMARK_UTILS:
+        print("Error: --visualize requires benchmark_utils package.")
         sys.exit(1)
 
     try:
@@ -390,38 +412,56 @@ def main():
     print(BAR)
 
     t_pl = th_pl = t_qiskit = th_qiskit = t_mahout = th_mahout = 0.0
+    
+    # For visualization: collect all timings and stats
+    duration_timings_raw = {}  # Raw duration timings for each framework
+    throughput_timings_raw = {}  # Raw throughput timings for each framework
+    duration_stats_dict = {}   # Duration statistics for each framework
+    throughput_stats_dict = {}   # Throughput statistics for each framework
 
     if args.statistical:
         # Statistical mode: run with warmup and multiple iterations
         if "pennylane" in frameworks:
             print()
             print("[PennyLane] Full Pipeline (DataLoader -> GPU)...")
-            t_pl, th_pl, _, _ = run_framework_statistical_throughput(
+            t_pl, th_pl, durations, throughputs = run_framework_statistical_throughput(
                 "PennyLane",
                 lambda: run_pennylane(args.qubits, args.batches, args.batch_size, args.prefetch),
                 warmup_iters=args.warmup,
                 repeat=args.repeat
             )
+            duration_timings_raw["PennyLane"] = [d * 1000 for d in durations]  # Convert to ms
+            throughput_timings_raw["PennyLane"] = throughputs
+            duration_stats_dict["PennyLane"] = compute_statistics(duration_timings_raw["PennyLane"])
+            throughput_stats_dict["PennyLane"] = compute_statistics(throughput_timings_raw["PennyLane"])
 
         if "qiskit" in frameworks:
             print()
             print("[Qiskit] Full Pipeline (DataLoader -> GPU)...")
-            t_qiskit, th_qiskit, _, _ = run_framework_statistical_throughput(
+            t_qiskit, th_qiskit, durations, throughputs = run_framework_statistical_throughput(
                 "Qiskit",
                 lambda: run_qiskit(args.qubits, args.batches, args.batch_size, args.prefetch),
                 warmup_iters=args.warmup,
                 repeat=args.repeat
             )
+            duration_timings_raw["Qiskit"] = [d * 1000 for d in durations]
+            throughput_timings_raw["Qiskit"] = throughputs
+            duration_stats_dict["Qiskit"] = compute_statistics(duration_timings_raw["Qiskit"])
+            throughput_stats_dict["Qiskit"] = compute_statistics(throughput_timings_raw["Qiskit"])
 
         if "mahout" in frameworks:
             print()
             print("[Mahout] Full Pipeline (DataLoader -> GPU)...")
-            t_mahout, th_mahout, _, _ = run_framework_statistical_throughput(
+            t_mahout, th_mahout, durations, throughputs = run_framework_statistical_throughput(
                 "Mahout",
                 lambda: run_mahout(args.qubits, args.batches, args.batch_size, args.prefetch),
                 warmup_iters=args.warmup,
                 repeat=args.repeat
             )
+            duration_timings_raw["Mahout"] = [d * 1000 for d in durations]
+            throughput_timings_raw["Mahout"] = throughputs
+            duration_stats_dict["Mahout"] = compute_statistics(duration_timings_raw["Mahout"])
+            throughput_stats_dict["Mahout"] = compute_statistics(throughput_timings_raw["Mahout"])
     else:
         # Standard mode: single run
         if "pennylane" in frameworks:
@@ -470,6 +510,53 @@ def main():
             print(f"Speedup vs PennyLane: {th_mahout / th_pl:10.2f}x")
         if t_qiskit > 0:
             print(f"Speedup vs Qiskit:    {th_mahout / th_qiskit:10.2f}x")
+    
+    # Generate visualizations if requested
+    if args.visualize and args.statistical and duration_timings_raw:
+        print()
+        print(BAR)
+        print("GENERATING VISUALIZATIONS")
+        print(BAR)
+        
+        try:
+            from pathlib import Path
+            visualizer = BenchmarkVisualizer()
+            output_dir = Path(args.output_dir)
+            output_dir.mkdir(parents=True, exist_ok=True)
+            
+            # Generate duration plots
+            print("\nGenerating duration visualizations...")
+            visualizer.create_all_plots(
+                results=duration_stats_dict,
+                results_raw=duration_timings_raw,
+                output_dir=output_dir,
+                prefix=f"throughput_duration_q{args.qubits}_b{args.batches}"
+            )
+            
+            # Generate throughput plots
+            print("Generating throughput visualizations...")
+            visualizer.create_all_plots(
+                results=throughput_stats_dict,
+                results_raw=throughput_timings_raw,
+                output_dir=output_dir,
+                prefix=f"throughput_vecpersec_q{args.qubits}_b{args.batches}"
+            )
+            
+            print(f"\nVisualization complete! Files saved to: {output_dir}")
+            print("\nDuration plots:")
+            print(f"  - Bar chart: {output_dir}/throughput_duration_q{args.qubits}_b{args.batches}_bars.png")
+            print(f"  - Box plot: {output_dir}/throughput_duration_q{args.qubits}_b{args.batches}_box.png")
+            print(f"  - Violin plot: {output_dir}/throughput_duration_q{args.qubits}_b{args.batches}_violin.png")
+            print(f"  - Statistics table: {output_dir}/throughput_duration_q{args.qubits}_b{args.batches}_table.md")
+            print("\nThroughput plots:")
+            print(f"  - Bar chart: {output_dir}/throughput_vecpersec_q{args.qubits}_b{args.batches}_bars.png")
+            print(f"  - Box plot: {output_dir}/throughput_vecpersec_q{args.qubits}_b{args.batches}_box.png")
+            print(f"  - Violin plot: {output_dir}/throughput_vecpersec_q{args.qubits}_b{args.batches}_violin.png")
+            print(f"  - Statistics table: {output_dir}/throughput_vecpersec_q{args.qubits}_b{args.batches}_table.md")
+            
+        except Exception as e:
+            print(f"\nWarning: Visualization generation failed: {e}")
+            print("Benchmark results are still valid.")
 
 
 if __name__ == "__main__":
