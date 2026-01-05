@@ -116,7 +116,19 @@ These issues make it difficult to:
 
 ```python
 def warmup(func, warmup_iters=3):
-    """Run function multiple times to warm up JIT, caches, etc."""
+    """
+    Run function multiple times to warm up JIT, caches, etc.
+    
+    Args:
+        func: Callable to warm up
+        warmup_iters: Number of warmup iterations (default: 3)
+    
+    Returns:
+        None
+    
+    Raises:
+        RuntimeError: If CUDA synchronization fails
+    """
     for _ in range(warmup_iters):
         func()
         if torch.cuda.is_available():
@@ -151,6 +163,8 @@ def clear_all_caches():
         
         # Optional: Clear L2 cache by allocating and freeing large tensor
         # This is more invasive and may not be needed for all benchmarks
+        # Size is chosen to exceed typical L2 cache size (~40-50 MB on most GPUs)
+        # Dimensions: 1024 * 1024 * 256 * 4 bytes (float32) = 1 GB
         # cache_clear_tensor = torch.empty(
         #     (1024, 1024, 256), dtype=torch.float32, device='cuda'
         # )
@@ -231,11 +245,13 @@ def compute_statistics(timings):
         Dictionary with statistical metrics
     """
     timings_arr = np.array(timings)
+    mean_val = np.mean(timings_arr)
+    std_val = np.std(timings_arr)
     
     return {
-        'mean': np.mean(timings_arr),
+        'mean': mean_val,
         'median': np.median(timings_arr),
-        'std': np.std(timings_arr),
+        'std': std_val,
         'min': np.min(timings_arr),
         'max': np.max(timings_arr),
         'p25': np.percentile(timings_arr, 25),
@@ -245,7 +261,7 @@ def compute_statistics(timings):
         'p95': np.percentile(timings_arr, 95),
         'p99': np.percentile(timings_arr, 99),
         'iqr': np.percentile(timings_arr, 75) - np.percentile(timings_arr, 25),
-        'cv': np.std(timings_arr) / np.mean(timings_arr) if np.mean(timings_arr) > 0 else 0,  # Coefficient of variation
+        'cv': std_val / mean_val if mean_val > 0 else 0,  # Coefficient of variation
         'n_runs': len(timings_arr),
     }
 ```
@@ -316,8 +332,22 @@ class BenchmarkVisualizer:
     """Create publication-ready benchmark visualizations."""
     
     def __init__(self, style='seaborn-v0_8-paper'):
-        """Initialize with publication style."""
-        plt.style.use(style)
+        """
+        Initialize with publication style.
+        
+        Args:
+            style: Matplotlib style name. Common options:
+                   - 'seaborn-v0_8-paper' (publication quality)
+                   - 'seaborn-v0_8-notebook' (presentations)
+                   - 'default' (fallback if seaborn unavailable)
+        
+        Note: If specified style is unavailable, falls back to 'default'.
+        """
+        try:
+            plt.style.use(style)
+        except OSError:
+            print(f"Warning: Style '{style}' not found, using 'default'")
+            plt.style.use('default')
         self.colors = sns.color_palette("husl", 8)
     
     def plot_comparison_bars(self, results, metric='mean', output_path='benchmark_bars.png'):
@@ -542,6 +572,8 @@ workloads:
 ## 7. Best Practices and References
 
 ### 7.1 Referenced Implementations
+
+> **Note**: The following references point to specific commits or line numbers. These links may become outdated as repositories evolve. If a link is broken, search for the relevant file in the repository's main branch.
 
 1. **PyTorch Helion**
    - Autotuner benchmarking: https://github.com/pytorch/helion/blob/main/helion/autotuner/benchmarking.py
