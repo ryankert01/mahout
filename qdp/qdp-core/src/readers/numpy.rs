@@ -58,9 +58,6 @@ impl NumpyReader {
 
         // Verify file exists
         match path.try_exists() {
-            Ok(true) => {
-                // File exists, continue
-            }
             Ok(false) => {
                 return Err(MahoutError::Io(format!(
                     "NumPy file not found: {}",
@@ -74,6 +71,7 @@ impl NumpyReader {
                     e
                 )));
             }
+            Ok(true) => {}
         }
 
         Ok(Self {

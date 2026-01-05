@@ -44,9 +44,6 @@ impl ParquetReader {
 
         // Verify file exists
         match path.try_exists() {
-            Ok(true) => {
-                // File exists, continue
-            }
             Ok(false) => {
                 return Err(MahoutError::Io(format!(
                     "Parquet file not found: {}",
@@ -60,6 +57,7 @@ impl ParquetReader {
                     e
                 )));
             }
+            Ok(true) => {}
         }
 
         let file = File::open(path)
@@ -257,9 +255,6 @@ impl ParquetStreamingReader {
 
         // Verify file exists
         match path.try_exists() {
-            Ok(true) => {
-                // File exists, continue
-            }
             Ok(false) => {
                 return Err(MahoutError::Io(format!(
                     "Parquet file not found: {}",
@@ -273,6 +268,7 @@ impl ParquetStreamingReader {
                     e
                 )));
             }
+            Ok(true) => {}
         }
 
         let file = File::open(path)

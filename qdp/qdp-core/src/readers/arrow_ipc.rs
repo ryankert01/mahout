@@ -42,9 +42,6 @@ impl ArrowIPCReader {
 
         // Verify file exists
         match path.try_exists() {
-            Ok(true) => {
-                // File exists, continue
-            }
             Ok(false) => {
                 return Err(MahoutError::Io(format!(
                     "Arrow IPC file not found: {}",
@@ -58,6 +55,7 @@ impl ArrowIPCReader {
                     e
                 )));
             }
+            Ok(true) => {}
         }
 
         Ok(Self {
