@@ -191,6 +191,57 @@ Notes:
   Options: `mahout`, `pennylane`, `qiskit`.
 - Throughput is reported in vectors/sec (higher is better).
 
+## Documentation and Tutorials
+
+### 📚 Best Practices Guide
+
+See [BEST_PRACTICES.md](./BEST_PRACTICES.md) for comprehensive guidance on:
+- Fairness principles (warmup, cache clearing, CUDA events)
+- Statistical rigor (distributions, repetitions, confidence intervals)
+- Reproducibility (configuration, versioning, documentation)
+- Publication guidelines (plots, tables, reporting)
+- Common pitfalls and how to avoid them
+
+### 📓 Tutorial Notebook
+
+Interactive tutorial covering all features: [statistical_benchmark_tutorial.ipynb](./notebooks/statistical_benchmark_tutorial.ipynb)
+
+Topics covered:
+- Using benchmark_utils API directly
+- Running statistical benchmarks
+- Creating publication-ready visualizations
+- Best practices with code examples
+
+### 📊 Visualization Examples
+
+The `--visualize` flag generates 4 types of outputs:
+
+1. **Bar charts** (`*_bars.png`): Quick comparison with error bars (mean ± std)
+2. **Box plots** (`*_box.png`): Show quartiles, median, and outliers
+3. **Violin plots** (`*_violin.png`): Show full distribution shapes
+4. **Markdown tables** (`*_table.md`): Complete statistics in table format
+
+**Example output structure**:
+```
+benchmark_results/
+├── e2e_q16_s200_bars.png        # Bar chart comparison
+├── e2e_q16_s200_box.png         # Box plot
+├── e2e_q16_s200_violin.png      # Violin plot
+└── e2e_q16_s200_table.md        # Statistics table
+```
+
+**Throughput benchmark** generates 2 sets (8 files total):
+- Duration metrics: `throughput_duration_q16_b200_*.{png|md}`
+- Throughput metrics: `throughput_vecpersec_q16_b200_*.{png|md}`
+
+All plots are 300 DPI, publication-ready PNG images suitable for papers and presentations.
+
+### 🔗 Additional Resources
+
+- [Benchmark Roadmap RFC](../../docs/BENCHMARK_ROADMAP.md) - Complete design and motivation
+- [Benchmark Utils API](./benchmark_utils/README.md) - Detailed API documentation
+- [Example Configuration](./benchmark_config.yaml) - YAML configuration template
+
 ## Dependency Notes
 
 - Qiskit and PennyLane are optional. If they are not installed, their benchmark
@@ -199,7 +250,37 @@ Notes:
   `uv pip uninstall qiskit pennylane`.
 - **Statistical mode** requires the `benchmark_utils` package (automatically available
   when running from this directory).
+- **Visualization mode** additionally requires matplotlib, seaborn, and pandas.
+
+## Notebooks
+
+### Interactive Tutorials
+
+We provide Jupyter notebooks for learning and experimentation:
+
+1. **[Statistical Benchmark Tutorial](./notebooks/statistical_benchmark_tutorial.ipynb)** - NEW!
+   - Complete walkthrough of statistical benchmarking features
+   - Code examples for all APIs
+   - Best practices demonstrations
+   - Interactive visualization
+
+2. **[Mahout Benchmark on Colab](./notebooks/mahout_benchmark.ipynb)**
+   - Run benchmarks without owning a GPU
+   - Quick start for beginners
+
+[![Open Tutorial in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/apache/mahout/blob/dev-qdp/qdp/qdp-python/benchmark/notebooks/statistical_benchmark_tutorial.ipynb)
 
 ### We can also run benchmarks on colab notebooks(without owning a GPU)
 
 [![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/apache/mahout/blob/dev-qdp/qdp/qdp-python/benchmark/notebooks/mahout_benchmark.ipynb)
+
+## Contributing
+
+When contributing benchmark results or improvements:
+
+1. **Follow best practices** - See [BEST_PRACTICES.md](./BEST_PRACTICES.md)
+2. **Document configuration** - Include YAML config and system specs
+3. **Use statistical mode** - For reliable, reproducible results
+4. **Share visualizations** - Help others understand your results
+
+For questions or issues, please open a GitHub issue or contact the Apache Mahout mailing list.
