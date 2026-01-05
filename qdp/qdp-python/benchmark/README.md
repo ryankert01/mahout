@@ -270,7 +270,7 @@ We provide Jupyter notebooks for learning and experimentation:
 
 [![Open Tutorial in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/apache/mahout/blob/dev-qdp/qdp/qdp-python/benchmark/notebooks/statistical_benchmark_tutorial.ipynb)
 
-### We can also run benchmarks on colab notebooks(without owning a GPU)
+### We can also run benchmarks on colab notebooks (without owning a GPU)
 
 [![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/apache/mahout/blob/dev-qdp/qdp/qdp-python/benchmark/notebooks/mahout_benchmark.ipynb)
 
