@@ -28,7 +28,7 @@ Modules:
 """
 
 from .timing import warmup, clear_all_caches, benchmark_with_cuda_events
-from .statistics import compute_statistics, filter_outliers
+from .statistics import compute_statistics, filter_outliers, format_statistics
 from .visualization import BenchmarkVisualizer
 
 __all__ = [
@@ -37,5 +37,6 @@ __all__ = [
     "benchmark_with_cuda_events",
     "compute_statistics",
     "filter_outliers",
+    "format_statistics",
     "BenchmarkVisualizer",
 ]

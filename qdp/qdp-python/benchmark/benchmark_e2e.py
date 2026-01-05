@@ -526,7 +526,7 @@ if __name__ == "__main__":
     if args.statistical and not HAS_BENCHMARK_UTILS:
         print("Error: --statistical mode requires benchmark_utils package.")
         print("Make sure benchmark_utils is installed or accessible.")
-        exit(1)
+        sys.exit(1)
 
     # Expand "all" option
     if "all" in args.frameworks:
@@ -538,7 +538,7 @@ if __name__ == "__main__":
         engine = QdpEngine(0)
     except Exception as e:
         print(f"Mahout Init Error: {e}")
-        exit(1)
+        sys.exit(1)
 
     # Clean cache before starting benchmarks
     clean_cache()

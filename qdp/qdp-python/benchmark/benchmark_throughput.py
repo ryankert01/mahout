@@ -283,8 +283,10 @@ def run_framework_statistical_throughput(framework_name, framework_func, warmup_
         end_event.record()
         
         torch.cuda.synchronize()
+        # Use CUDA event timing for precision (overrides framework_func duration)
         measured_duration = start_event.elapsed_time(end_event) / 1000.0  # Convert ms to seconds
         durations.append(measured_duration)
+        # Keep throughput from framework_func as it's computed from actual processed count
         throughputs.append(throughput)
         
         if (i + 1) % 5 == 0:
@@ -354,7 +356,7 @@ def main():
     if args.statistical and not HAS_BENCHMARK_UTILS:
         print("Error: --statistical mode requires benchmark_utils package.")
         print("Make sure benchmark_utils is installed or accessible.")
-        exit(1)
+        sys.exit(1)
 
     try:
         frameworks = parse_frameworks(args.frameworks)
