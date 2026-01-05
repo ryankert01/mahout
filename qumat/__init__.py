@@ -15,5 +15,6 @@
 # limitations under the License.
 
 from .qumat import QuMat
+from .file_utils import path_exists, ensure_file_exists
 
-__all__ = ["QuMat"]
+__all__ = ["QuMat", "path_exists", "ensure_file_exists"]
