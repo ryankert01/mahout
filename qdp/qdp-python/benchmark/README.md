@@ -12,6 +12,9 @@ scripts:
 > measurements, and visualization capabilities, see the
 > [Benchmark Roadmap (RFC)](../../docs/BENCHMARK_ROADMAP.md).
 
+> **✨ NEW - Phase 2**: Both benchmarks now support **statistical mode** with warmup,
+> CUDA event timing, and comprehensive statistics! Use `--statistical` flag.
+
 ## Quick Start
 
 From the repo root:
@@ -36,9 +39,24 @@ environment and use `python ...`.
 
 ## E2E Benchmark (Disk -> GPU)
 
+### Standard Mode (Single Run)
+
 ```bash
 cd qdp/qdp-python/benchmark
 python benchmark_e2e.py
+```
+
+### Statistical Mode (Multiple Runs with Warmup) - NEW!
+
+```bash
+# Run with statistical analysis
+python benchmark_e2e.py --statistical
+
+# Customize warmup and repeat iterations
+python benchmark_e2e.py --statistical --warmup 5 --repeat 20
+
+# Combine with framework selection
+python benchmark_e2e.py --statistical --frameworks mahout-parquet pennylane
 ```
 
 Additional options:
@@ -47,6 +65,17 @@ Additional options:
 python benchmark_e2e.py --qubits 16 --samples 200 --frameworks mahout-parquet mahout-arrow
 python benchmark_e2e.py --frameworks all
 ```
+
+**New Flags** (Phase 2):
+- `--statistical`: Enable statistical mode with warmup and multiple runs
+- `--warmup N`: Number of warmup iterations (default: 3)
+- `--repeat N`: Number of measurement iterations (default: 10)
+
+**Statistical mode provides:**
+- Warmup runs to eliminate JIT compilation overhead
+- CUDA event-based precise timing
+- Comprehensive statistics: mean, median, std, percentiles (P25-P99), IQR, CV
+- Cache clearing between runs for fair comparison
 
 Notes:
 
@@ -67,11 +96,38 @@ avoid the "starvation" often seen in hybrid training loops.
 See `qdp/qdp-python/benchmark/benchmark_throughput.md` for details and example
 output.
 
+### Standard Mode (Single Run)
+
 ```bash
 cd qdp/qdp-python/benchmark
 python benchmark_throughput.py --qubits 16 --batches 200 --batch-size 64 --prefetch 16
 python benchmark_throughput.py --frameworks mahout,pennylane
 ```
+
+### Statistical Mode (Multiple Runs with Warmup) - NEW!
+
+```bash
+# Run with statistical analysis
+python benchmark_throughput.py --statistical
+
+# Customize warmup and repeat iterations
+python benchmark_throughput.py --statistical --warmup 2 --repeat 15
+
+# Combine with framework selection
+python benchmark_throughput.py --statistical --frameworks mahout,pennylane
+```
+
+**New Flags** (Phase 2):
+- `--statistical`: Enable statistical mode with warmup and multiple runs
+- `--warmup N`: Number of warmup iterations (default: 2 for throughput)
+- `--repeat N`: Number of measurement iterations (default: 10)
+
+**Statistical mode provides:**
+- Warmup runs to eliminate JIT compilation overhead
+- CUDA event-based precise timing
+- Duration statistics: mean, median, std, percentiles
+- Throughput statistics: mean, median, std, percentiles
+- Cache clearing between runs for fair comparison
 
 Notes:
 
@@ -85,6 +141,8 @@ Notes:
   legs are skipped automatically.
 - For Mahout-only runs, you can uninstall the competitor frameworks:
   `uv pip uninstall qiskit pennylane`.
+- **Statistical mode** requires the `benchmark_utils` package (automatically available
+  when running from this directory).
 
 ### We can also run benchmarks on colab notebooks(without owning a GPU)
 

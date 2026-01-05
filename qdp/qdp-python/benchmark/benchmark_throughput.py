@@ -31,11 +31,30 @@ import argparse
 import queue
 import threading
 import time
+import sys
+from pathlib import Path
 
 import numpy as np
 import torch
 
 from mahout_qdp import QdpEngine
+
+# Add benchmark_utils to path
+benchmark_dir = Path(__file__).parent
+sys.path.insert(0, str(benchmark_dir))
+
+# Import benchmark utilities (optional for statistical mode)
+try:
+    from benchmark_utils import (
+        warmup,
+        clear_all_caches,
+        benchmark_with_cuda_events,
+        compute_statistics,
+        format_statistics,
+    )
+    HAS_BENCHMARK_UTILS = True
+except ImportError:
+    HAS_BENCHMARK_UTILS = False
 
 BAR = "=" * 70
 SEP = "-" * 70
@@ -215,6 +234,77 @@ def run_qiskit(num_qubits: int, total_batches: int, batch_size: int, prefetch: i
     return duration, throughput
 
 
+# -----------------------------------------------------------
+# Statistical Mode Wrappers (Phase 2)
+# -----------------------------------------------------------
+def run_framework_statistical_throughput(framework_name, framework_func, warmup_iters=2, repeat=10):
+    """
+    Run a throughput benchmark in statistical mode with multiple iterations.
+    
+    Args:
+        framework_name: Name of the framework for display
+        framework_func: Function to benchmark (must take no arguments and return (duration, throughput))
+        warmup_iters: Number of warmup iterations
+        repeat: Number of measurement iterations
+    
+    Returns:
+        Tuple of (mean_duration, mean_throughput, all_durations, all_throughputs)
+    """
+    if not HAS_BENCHMARK_UTILS:
+        print(f"\n[{framework_name}] Warning: benchmark_utils not available, running single iteration")
+        duration, throughput = framework_func()
+        return duration, throughput, [duration], [throughput]
+    
+    print(f"\n[{framework_name}] Statistical Mode: Warmup ({warmup_iters} iters)...")
+    
+    # Warmup phase
+    for i in range(warmup_iters):
+        clear_all_caches()
+        _ = framework_func()
+        if i == 0:
+            print(f"  Warmup iteration {i+1}/{warmup_iters} complete")
+    
+    print(f"[{framework_name}] Running {repeat} measurement iterations...")
+    clear_all_caches()
+    
+    # Measurement phase
+    durations = []
+    throughputs = []
+    
+    for i in range(repeat):
+        clear_all_caches()
+        
+        torch.cuda.synchronize()
+        start_event = torch.cuda.Event(enable_timing=True)
+        end_event = torch.cuda.Event(enable_timing=True)
+        
+        start_event.record()
+        duration, throughput = framework_func()
+        end_event.record()
+        
+        torch.cuda.synchronize()
+        measured_duration = start_event.elapsed_time(end_event) / 1000.0  # Convert ms to seconds
+        durations.append(measured_duration)
+        throughputs.append(throughput)
+        
+        if (i + 1) % 5 == 0:
+            print(f"  Completed {i+1}/{repeat} iterations")
+    
+    # Compute statistics
+    duration_stats = compute_statistics([d * 1000 for d in durations])  # Convert to ms for stats
+    throughput_stats = compute_statistics(throughputs)
+    
+    print(f"\n[{framework_name}] Statistical Results:")
+    print("Duration Statistics:")
+    print(format_statistics(duration_stats, unit="ms"))
+    print("\nThroughput Statistics:")
+    print(format_statistics(throughput_stats, unit="vectors/sec"))
+    
+    mean_duration = duration_stats['mean'] / 1000.0  # Convert back to seconds
+    mean_throughput = throughput_stats['mean']
+    return mean_duration, mean_throughput, durations, throughputs
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Benchmark DataLoader throughput across frameworks."
@@ -241,7 +331,30 @@ def main():
             "(pennylane,qiskit,mahout) or 'all'."
         ),
     )
+    parser.add_argument(
+        "--statistical",
+        action="store_true",
+        help="Enable statistical mode with warmup and multiple runs (requires benchmark_utils)",
+    )
+    parser.add_argument(
+        "--warmup",
+        type=int,
+        default=2,
+        help="Number of warmup iterations in statistical mode (default: 2 for throughput)",
+    )
+    parser.add_argument(
+        "--repeat",
+        type=int,
+        default=10,
+        help="Number of measurement iterations in statistical mode (default: 10)",
+    )
     args = parser.parse_args()
+    
+    # Check if statistical mode is enabled but benchmark_utils is not available
+    if args.statistical and not HAS_BENCHMARK_UTILS:
+        print("Error: --statistical mode requires benchmark_utils package.")
+        print("Make sure benchmark_utils is installed or accessible.")
+        exit(1)
 
     try:
         frameworks = parse_frameworks(args.frameworks)
@@ -266,33 +379,69 @@ def main():
     print()
 
     print(BAR)
+    mode_str = " (Statistical Mode)" if args.statistical else ""
     print(
-        f"DATALOADER THROUGHPUT BENCHMARK: {args.qubits} Qubits, {total_vectors} Samples"
+        f"DATALOADER THROUGHPUT BENCHMARK: {args.qubits} Qubits, {total_vectors} Samples{mode_str}"
     )
+    if args.statistical:
+        print(f"Warmup: {args.warmup} iterations, Repeat: {args.repeat} measurements")
     print(BAR)
 
     t_pl = th_pl = t_qiskit = th_qiskit = t_mahout = th_mahout = 0.0
 
-    if "pennylane" in frameworks:
-        print()
-        print("[PennyLane] Full Pipeline (DataLoader -> GPU)...")
-        t_pl, th_pl = run_pennylane(
-            args.qubits, args.batches, args.batch_size, args.prefetch
-        )
+    if args.statistical:
+        # Statistical mode: run with warmup and multiple iterations
+        if "pennylane" in frameworks:
+            print()
+            print("[PennyLane] Full Pipeline (DataLoader -> GPU)...")
+            t_pl, th_pl, _, _ = run_framework_statistical_throughput(
+                "PennyLane",
+                lambda: run_pennylane(args.qubits, args.batches, args.batch_size, args.prefetch),
+                warmup_iters=args.warmup,
+                repeat=args.repeat
+            )
 
-    if "qiskit" in frameworks:
-        print()
-        print("[Qiskit] Full Pipeline (DataLoader -> GPU)...")
-        t_qiskit, th_qiskit = run_qiskit(
-            args.qubits, args.batches, args.batch_size, args.prefetch
-        )
+        if "qiskit" in frameworks:
+            print()
+            print("[Qiskit] Full Pipeline (DataLoader -> GPU)...")
+            t_qiskit, th_qiskit, _, _ = run_framework_statistical_throughput(
+                "Qiskit",
+                lambda: run_qiskit(args.qubits, args.batches, args.batch_size, args.prefetch),
+                warmup_iters=args.warmup,
+                repeat=args.repeat
+            )
 
-    if "mahout" in frameworks:
-        print()
-        print("[Mahout] Full Pipeline (DataLoader -> GPU)...")
-        t_mahout, th_mahout = run_mahout(
-            args.qubits, args.batches, args.batch_size, args.prefetch
-        )
+        if "mahout" in frameworks:
+            print()
+            print("[Mahout] Full Pipeline (DataLoader -> GPU)...")
+            t_mahout, th_mahout, _, _ = run_framework_statistical_throughput(
+                "Mahout",
+                lambda: run_mahout(args.qubits, args.batches, args.batch_size, args.prefetch),
+                warmup_iters=args.warmup,
+                repeat=args.repeat
+            )
+    else:
+        # Standard mode: single run
+        if "pennylane" in frameworks:
+            print()
+            print("[PennyLane] Full Pipeline (DataLoader -> GPU)...")
+            t_pl, th_pl = run_pennylane(
+                args.qubits, args.batches, args.batch_size, args.prefetch
+            )
+
+        if "qiskit" in frameworks:
+            print()
+            print("[Qiskit] Full Pipeline (DataLoader -> GPU)...")
+            t_qiskit, th_qiskit = run_qiskit(
+                args.qubits, args.batches, args.batch_size, args.prefetch
+            )
+
+        if "mahout" in frameworks:
+            print()
+            print("[Mahout] Full Pipeline (DataLoader -> GPU)...")
+            t_mahout, th_mahout = run_mahout(
+                args.qubits, args.batches, args.batch_size, args.prefetch
+            )
 
     print()
     print(BAR)

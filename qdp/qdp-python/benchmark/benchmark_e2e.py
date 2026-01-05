@@ -36,10 +36,29 @@ import numpy as np
 import os
 import itertools
 import gc
+import sys
+from pathlib import Path
 import pyarrow as pa
 import pyarrow.parquet as pq
 import pyarrow.ipc as ipc
 from mahout_qdp import QdpEngine
+
+# Add benchmark_utils to path
+benchmark_dir = Path(__file__).parent
+sys.path.insert(0, str(benchmark_dir))
+
+# Import benchmark utilities (optional for statistical mode)
+try:
+    from benchmark_utils import (
+        warmup,
+        clear_all_caches,
+        benchmark_with_cuda_events,
+        compute_statistics,
+        format_statistics,
+    )
+    HAS_BENCHMARK_UTILS = True
+except ImportError:
+    HAS_BENCHMARK_UTILS = False
 
 # Competitors
 try:
@@ -70,6 +89,14 @@ def clean_cache():
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
         torch.cuda.synchronize()
+
+
+def clean_cache_statistical():
+    """Use benchmark_utils cache clearing if available, otherwise fall back to clean_cache."""
+    if HAS_BENCHMARK_UTILS:
+        clear_all_caches()
+    else:
+        clean_cache()
 
 
 class DummyQNN(nn.Module):
@@ -391,6 +418,74 @@ def verify_correctness(states_dict):
         compare_states(name_a, valid_states[name_a], name_b, valid_states[name_b])
 
 
+# -----------------------------------------------------------
+# Statistical Mode Wrappers (Phase 2)
+# -----------------------------------------------------------
+def run_framework_statistical(framework_name, framework_func, warmup_iters=3, repeat=10):
+    """
+    Run a framework benchmark in statistical mode with multiple iterations.
+    
+    Args:
+        framework_name: Name of the framework for display
+        framework_func: Function to benchmark (must take no arguments)
+        warmup_iters: Number of warmup iterations
+        repeat: Number of measurement iterations
+    
+    Returns:
+        Tuple of (mean_time, all_timings, result_state)
+    """
+    if not HAS_BENCHMARK_UTILS:
+        print(f"\n[{framework_name}] Warning: benchmark_utils not available, running single iteration")
+        result = framework_func()
+        return result[0], [result[0]], result[1]
+    
+    print(f"\n[{framework_name}] Statistical Mode: Warmup ({warmup_iters} iters)...")
+    
+    # Warmup phase
+    for i in range(warmup_iters):
+        clean_cache_statistical()
+        _ = framework_func()
+        if i == 0:
+            print(f"  Warmup iteration {i+1}/{warmup_iters} complete")
+    
+    print(f"[{framework_name}] Running {repeat} measurement iterations...")
+    clean_cache_statistical()
+    
+    # Measurement phase
+    timings = []
+    result_state = None
+    
+    for i in range(repeat):
+        clean_cache_statistical()
+        
+        torch.cuda.synchronize()
+        start_event = torch.cuda.Event(enable_timing=True)
+        end_event = torch.cuda.Event(enable_timing=True)
+        
+        start_event.record()
+        timing, state = framework_func()
+        end_event.record()
+        
+        torch.cuda.synchronize()
+        timings.append(start_event.elapsed_time(end_event) / 1000.0)  # Convert ms to seconds
+        
+        # Keep the last state for verification
+        if i == repeat - 1:
+            result_state = state
+        
+        if (i + 1) % 5 == 0:
+            print(f"  Completed {i+1}/{repeat} iterations")
+    
+    # Compute statistics
+    stats = compute_statistics([t * 1000 for t in timings])  # Convert to ms for stats
+    
+    print(f"\n[{framework_name}] Statistical Results:")
+    print(format_statistics(stats, unit="ms"))
+    
+    mean_time = stats['mean'] / 1000.0  # Convert back to seconds
+    return mean_time, timings, result_state
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         description="Final End-to-End Benchmark (Disk -> GPU VRAM)"
@@ -408,7 +503,30 @@ if __name__ == "__main__":
         choices=["mahout-parquet", "mahout-arrow", "pennylane", "qiskit", "all"],
         help="Frameworks to benchmark. Use 'all' to run all available frameworks.",
     )
+    parser.add_argument(
+        "--statistical",
+        action="store_true",
+        help="Enable statistical mode with warmup and multiple runs (requires benchmark_utils)",
+    )
+    parser.add_argument(
+        "--warmup",
+        type=int,
+        default=3,
+        help="Number of warmup iterations in statistical mode (default: 3)",
+    )
+    parser.add_argument(
+        "--repeat",
+        type=int,
+        default=10,
+        help="Number of measurement iterations in statistical mode (default: 10)",
+    )
     args = parser.parse_args()
+    
+    # Check if statistical mode is enabled but benchmark_utils is not available
+    if args.statistical and not HAS_BENCHMARK_UTILS:
+        print("Error: --statistical mode requires benchmark_utils package.")
+        print("Make sure benchmark_utils is installed or accessible.")
+        exit(1)
 
     # Expand "all" option
     if "all" in args.frameworks:
@@ -426,7 +544,10 @@ if __name__ == "__main__":
     clean_cache()
 
     print("\n" + "=" * 70)
-    print(f"E2E BENCHMARK: {args.qubits} Qubits, {args.samples} Samples")
+    mode_str = " (Statistical Mode)" if args.statistical else ""
+    print(f"E2E BENCHMARK: {args.qubits} Qubits, {args.samples} Samples{mode_str}")
+    if args.statistical:
+        print(f"Warmup: {args.warmup} iterations, Repeat: {args.repeat} measurements")
     print("=" * 70)
 
     # Initialize results
@@ -436,29 +557,64 @@ if __name__ == "__main__":
     t_qiskit, qiskit_all_states = 0.0, None
 
     # Run benchmarks
-    if "pennylane" in args.frameworks:
-        t_pl, pl_all_states = run_pennylane(args.qubits, args.samples)
-        # Clean cache between framework benchmarks
-        clean_cache()
+    if args.statistical:
+        # Statistical mode: run with warmup and multiple iterations
+        if "pennylane" in args.frameworks:
+            t_pl, _, pl_all_states = run_framework_statistical(
+                "PennyLane",
+                lambda: run_pennylane(args.qubits, args.samples),
+                warmup_iters=args.warmup,
+                repeat=args.repeat
+            )
+            clean_cache_statistical()
 
-    if "qiskit" in args.frameworks:
-        t_qiskit, qiskit_all_states = run_qiskit(args.qubits, args.samples)
-        # Clean cache between framework benchmarks
-        clean_cache()
+        if "qiskit" in args.frameworks:
+            t_qiskit, _, qiskit_all_states = run_framework_statistical(
+                "Qiskit",
+                lambda: run_qiskit(args.qubits, args.samples),
+                warmup_iters=args.warmup,
+                repeat=args.repeat
+            )
+            clean_cache_statistical()
 
-    if "mahout-parquet" in args.frameworks:
-        t_mahout_parquet, mahout_parquet_all_states = run_mahout_parquet(
-            engine, args.qubits, args.samples
-        )
-        # Clean cache between framework benchmarks
-        clean_cache()
+        if "mahout-parquet" in args.frameworks:
+            t_mahout_parquet, _, mahout_parquet_all_states = run_framework_statistical(
+                "Mahout-Parquet",
+                lambda: run_mahout_parquet(engine, args.qubits, args.samples),
+                warmup_iters=args.warmup,
+                repeat=args.repeat
+            )
+            clean_cache_statistical()
 
-    if "mahout-arrow" in args.frameworks:
-        t_mahout_arrow, mahout_arrow_all_states = run_mahout_arrow(
-            engine, args.qubits, args.samples
-        )
-        # Clean cache between framework benchmarks
-        clean_cache()
+        if "mahout-arrow" in args.frameworks:
+            t_mahout_arrow, _, mahout_arrow_all_states = run_framework_statistical(
+                "Mahout-Arrow",
+                lambda: run_mahout_arrow(engine, args.qubits, args.samples),
+                warmup_iters=args.warmup,
+                repeat=args.repeat
+            )
+            clean_cache_statistical()
+    else:
+        # Standard mode: single run
+        if "pennylane" in args.frameworks:
+            t_pl, pl_all_states = run_pennylane(args.qubits, args.samples)
+            clean_cache()
+
+        if "qiskit" in args.frameworks:
+            t_qiskit, qiskit_all_states = run_qiskit(args.qubits, args.samples)
+            clean_cache()
+
+        if "mahout-parquet" in args.frameworks:
+            t_mahout_parquet, mahout_parquet_all_states = run_mahout_parquet(
+                engine, args.qubits, args.samples
+            )
+            clean_cache()
+
+        if "mahout-arrow" in args.frameworks:
+            t_mahout_arrow, mahout_arrow_all_states = run_mahout_arrow(
+                engine, args.qubits, args.samples
+            )
+            clean_cache()
 
     print("\n" + "=" * 70)
     print("E2E LATENCY (Lower is Better)")
