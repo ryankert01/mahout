@@ -8,6 +8,10 @@ scripts:
 - `benchmark_throughput.py`: DataLoader-style throughput benchmark
   that measures vectors/sec across Mahout, PennyLane, and Qiskit.
 
+> **📋 Benchmark Roadmap**: For planned improvements including fairness, statistical
+> measurements, and visualization capabilities, see the
+> [Benchmark Roadmap (RFC)](../../docs/BENCHMARK_ROADMAP.md).
+
 ## Quick Start
 
 From the repo root:
