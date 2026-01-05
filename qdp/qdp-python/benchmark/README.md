@@ -191,6 +191,80 @@ Notes:
   Options: `mahout`, `pennylane`, `qiskit`.
 - Throughput is reported in vectors/sec (higher is better).
 
+## NumPy I/O Benchmark
+
+Benchmarks loading quantum state data from NumPy `.npy` files and encoding on GPU.
+Compares Mahout's NumPy reader against PennyLane's file loading + encoding.
+
+### Standard Mode (Single Run)
+
+```bash
+cd qdp/qdp-python/benchmark
+python benchmark_numpy_io.py --qubits 10 --samples 1000
+python benchmark_numpy_io.py --frameworks mahout,pennylane
+```
+
+### Statistical Mode (Multiple Runs with Warmup) - NEW!
+
+```bash
+# Run with statistical analysis
+python benchmark_numpy_io.py --statistical
+
+# Customize warmup and repeat iterations
+python benchmark_numpy_io.py --statistical --warmup 3 --repeat 15
+
+# Combine with framework selection
+python benchmark_numpy_io.py --statistical --frameworks mahout,pennylane
+```
+
+### Visualization Mode (Publication-Ready Plots) - NEW!
+
+```bash
+# Generate visualizations with statistical mode
+python benchmark_numpy_io.py --statistical --visualize
+
+# Customize output directory
+python benchmark_numpy_io.py --statistical --visualize --output-dir ./my_results
+
+# Full example with all options
+python benchmark_numpy_io.py --statistical --visualize \
+  --warmup 3 --repeat 15 \
+  --qubits 10 --samples 1000 \
+  --frameworks mahout,pennylane \
+  --output-dir ./numpy_results
+```
+
+**Generates TWO sets of plots:**
+1. **Duration plots**: Time taken for I/O + encoding
+2. **Throughput plots**: Samples processed per second
+
+**Each set includes:**
+- Bar charts with error bars
+- Box plots showing quartiles
+- Violin plots showing distributions
+- Markdown tables with statistics
+
+**New Flags**:
+- `--statistical`: Enable statistical mode with warmup and multiple runs
+- `--warmup N`: Number of warmup iterations (default: 3)
+- `--repeat N`: Number of measurement iterations (default: 10)
+- `--visualize`: Generate publication-ready plots (requires --statistical)
+- `--output-dir PATH`: Directory to save plots (default: ./benchmark_results)
+
+**Statistical mode provides:**
+- Warmup runs to eliminate JIT compilation overhead
+- CUDA event-based precise timing
+- Duration statistics: mean, median, std, percentiles
+- Throughput statistics: mean, median, std, percentiles
+- Cache clearing between runs for fair comparison
+
+Notes:
+
+- Compares NumPy file I/O performance: Mahout's Rust-based reader vs PennyLane's Python loading
+- Measures end-to-end: file read + GPU encoding + transfer
+- `--output` flag allows saving the `.npy` file for reuse
+- `--frameworks` options: `mahout`, `pennylane`, or `all`
+
 ## Documentation and Tutorials
 
 ### 📚 Best Practices Guide

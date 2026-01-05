@@ -33,8 +33,10 @@ Run:
 
 import argparse
 import os
+import sys
 import tempfile
 import time
+from pathlib import Path
 
 import numpy as np
 import torch
@@ -50,6 +52,20 @@ try:
     HAS_PENNYLANE = True
 except ImportError:
     HAS_PENNYLANE = False
+
+# Try to import benchmark_utils for statistical mode
+try:
+    from benchmark_utils import (
+        benchmark_with_cuda_events,
+        clear_all_caches,
+        compute_statistics,
+        format_statistics,
+        BenchmarkVisualizer,
+    )
+    HAS_BENCHMARK_UTILS = True
+except ImportError:
+    HAS_BENCHMARK_UTILS = False
+    print("Note: benchmark_utils not available. Statistical mode disabled.")
 
 
 def generate_test_data(
@@ -153,6 +169,66 @@ def run_pennylane_numpy(num_qubits: int, num_samples: int, npy_path: str):
         return 0.0, 0.0, 0.0
 
 
+def run_framework_statistical(
+    framework_name: str, benchmark_func, warmup_iters: int, repeat: int
+):
+    """
+    Run a framework benchmark in statistical mode with warmup and multiple iterations.
+    
+    Args:
+        framework_name: Name of the framework being benchmarked
+        benchmark_func: Function that runs one iteration and returns (duration, throughput, avg_per_sample)
+        warmup_iters: Number of warmup iterations
+        repeat: Number of measurement iterations
+    
+    Returns:
+        Tuple of (mean_duration, mean_throughput, durations_list, throughputs_list)
+    """
+    if not HAS_BENCHMARK_UTILS:
+        print(f"\n[{framework_name}] Statistical mode not available, falling back to standard mode")
+        return benchmark_func()
+    
+    print(f"\n[{framework_name}] Statistical mode (warmup={warmup_iters}, repeat={repeat})")
+    
+    # Warmup phase
+    print(f"  Warmup ({warmup_iters} iterations)...")
+    for i in range(warmup_iters):
+        _ = benchmark_func()
+        clear_all_caches()
+    
+    # Measurement phase
+    print(f"  Measuring ({repeat} iterations)...")
+    durations = []
+    throughputs = []
+    
+    for i in range(repeat):
+        duration, throughput, _ = benchmark_func()
+        if duration > 0:
+            durations.append(duration * 1000)  # Convert to ms
+            throughputs.append(throughput)
+        clear_all_caches()
+    
+    if not durations:
+        print(f"  Error: No successful measurements")
+        return 0.0, 0.0, [], []
+    
+    # Compute and display statistics
+    duration_stats = compute_statistics(durations)
+    throughput_stats = compute_statistics(throughputs)
+    
+    print(f"\n  Duration Statistics (ms):")
+    print(format_statistics(duration_stats, indent="    "))
+    
+    print(f"\n  Throughput Statistics (samples/sec):")
+    print(format_statistics(throughput_stats, indent="    "))
+    
+    # Return mean values for compatibility with standard mode
+    mean_duration = duration_stats['mean'] / 1000  # Convert back to seconds
+    mean_throughput = throughput_stats['mean']
+    
+    return mean_duration, mean_throughput, durations, throughputs
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Benchmark NumPy I/O + Encoding: Mahout vs PennyLane"
@@ -181,7 +257,44 @@ def main():
         default="all",
         help="Comma-separated list: mahout,pennylane or 'all'",
     )
+    parser.add_argument(
+        "--statistical",
+        action="store_true",
+        help="Enable statistical mode with warmup and multiple runs",
+    )
+    parser.add_argument(
+        "--warmup",
+        type=int,
+        default=3,
+        help="Number of warmup iterations (default: 3)",
+    )
+    parser.add_argument(
+        "--repeat",
+        type=int,
+        default=10,
+        help="Number of measurement iterations (default: 10)",
+    )
+    parser.add_argument(
+        "--visualize",
+        action="store_true",
+        help="Generate publication-ready plots (requires --statistical)",
+    )
+    parser.add_argument(
+        "--output-dir",
+        type=str,
+        default="./benchmark_results",
+        help="Directory to save visualization plots (default: ./benchmark_results)",
+    )
     args = parser.parse_args()
+    
+    # Validate arguments
+    if args.visualize and not args.statistical:
+        print("Error: --visualize requires --statistical mode")
+        sys.exit(1)
+    
+    if args.statistical and not HAS_BENCHMARK_UTILS:
+        print("Error: --statistical mode requires benchmark_utils package")
+        sys.exit(1)
 
     # Parse frameworks
     if args.frameworks.lower() == "all":
@@ -201,6 +314,10 @@ def main():
     print(f"Number of samples: {num_samples}")
     print(f"Total data: {num_samples * sample_size * 8 / (1024**2):.2f} MB")
     print(f"Frameworks: {', '.join(frameworks)}")
+    if args.statistical:
+        print(f"Mode: Statistical (warmup={args.warmup}, repeat={args.repeat})")
+    else:
+        print(f"Mode: Standard (single run)")
 
     # Generate test data
     print("\nGenerating test data...")
@@ -220,28 +337,69 @@ def main():
 
     # Run benchmarks
     results = {}
+    
+    # For visualization: collect all timings and stats
+    duration_timings_raw = {}  # Raw duration timings for each framework
+    throughput_timings_raw = {}  # Raw throughput timings for each framework
+    duration_stats_dict = {}   # Duration statistics for each framework
+    throughput_stats_dict = {}   # Throughput statistics for each framework
 
-    if "mahout" in frameworks:
-        t_total, throughput, avg_per_sample = run_mahout_numpy(
-            num_qubits, num_samples, npy_path
-        )
-        if throughput > 0:
-            results["Mahout"] = {
-                "time": t_total,
-                "throughput": throughput,
-                "avg_per_sample": avg_per_sample,
-            }
+    if args.statistical:
+        # Statistical mode
+        if "mahout" in frameworks:
+            benchmark_func = lambda: run_mahout_numpy(num_qubits, num_samples, npy_path)
+            t_total, throughput, durations, throughputs = run_framework_statistical(
+                "Mahout", benchmark_func, args.warmup, args.repeat
+            )
+            if throughput > 0:
+                results["Mahout"] = {
+                    "time": t_total,
+                    "throughput": throughput,
+                    "avg_per_sample": t_total / num_samples,
+                }
+                duration_timings_raw["Mahout"] = durations
+                throughput_timings_raw["Mahout"] = throughputs
+                duration_stats_dict["Mahout"] = compute_statistics(durations)
+                throughput_stats_dict["Mahout"] = compute_statistics(throughputs)
 
-    if "pennylane" in frameworks:
-        t_total, throughput, avg_per_sample = run_pennylane_numpy(
-            num_qubits, num_samples, npy_path
-        )
-        if throughput > 0:
-            results["PennyLane"] = {
-                "time": t_total,
-                "throughput": throughput,
-                "avg_per_sample": avg_per_sample,
-            }
+        if "pennylane" in frameworks:
+            benchmark_func = lambda: run_pennylane_numpy(num_qubits, num_samples, npy_path)
+            t_total, throughput, durations, throughputs = run_framework_statistical(
+                "PennyLane", benchmark_func, args.warmup, args.repeat
+            )
+            if throughput > 0:
+                results["PennyLane"] = {
+                    "time": t_total,
+                    "throughput": throughput,
+                    "avg_per_sample": t_total / num_samples,
+                }
+                duration_timings_raw["PennyLane"] = durations
+                throughput_timings_raw["PennyLane"] = throughputs
+                duration_stats_dict["PennyLane"] = compute_statistics(durations)
+                throughput_stats_dict["PennyLane"] = compute_statistics(throughputs)
+    else:
+        # Standard mode (original behavior)
+        if "mahout" in frameworks:
+            t_total, throughput, avg_per_sample = run_mahout_numpy(
+                num_qubits, num_samples, npy_path
+            )
+            if throughput > 0:
+                results["Mahout"] = {
+                    "time": t_total,
+                    "throughput": throughput,
+                    "avg_per_sample": avg_per_sample,
+                }
+
+        if "pennylane" in frameworks:
+            t_total, throughput, avg_per_sample = run_pennylane_numpy(
+                num_qubits, num_samples, npy_path
+            )
+            if throughput > 0:
+                results["PennyLane"] = {
+                    "time": t_total,
+                    "throughput": throughput,
+                    "avg_per_sample": avg_per_sample,
+                }
 
     # Print summary
     if results:
@@ -278,6 +436,52 @@ def main():
 
                 time_ratio = results["PennyLane"]["time"] / results["Mahout"]["time"]
                 print(f"Time reduction: {time_ratio:.2f}x faster")
+    
+    # Generate visualizations if requested
+    if args.visualize and args.statistical and duration_timings_raw:
+        print()
+        print(BAR)
+        print("GENERATING VISUALIZATIONS")
+        print(BAR)
+        
+        try:
+            visualizer = BenchmarkVisualizer()
+            output_dir = Path(args.output_dir)
+            output_dir.mkdir(parents=True, exist_ok=True)
+            
+            # Generate duration plots
+            print("\nGenerating duration visualizations...")
+            visualizer.create_all_plots(
+                results=duration_stats_dict,
+                results_raw=duration_timings_raw,
+                output_dir=output_dir,
+                prefix=f"numpy_duration_q{num_qubits}_s{num_samples}"
+            )
+            
+            # Generate throughput plots
+            print("Generating throughput visualizations...")
+            visualizer.create_all_plots(
+                results=throughput_stats_dict,
+                results_raw=throughput_timings_raw,
+                output_dir=output_dir,
+                prefix=f"numpy_throughput_q{num_qubits}_s{num_samples}"
+            )
+            
+            print(f"\nVisualization complete! Files saved to: {output_dir}")
+            print("\nDuration plots:")
+            print(f"  - Bar chart: {output_dir}/numpy_duration_q{num_qubits}_s{num_samples}_bars.png")
+            print(f"  - Box plot: {output_dir}/numpy_duration_q{num_qubits}_s{num_samples}_box.png")
+            print(f"  - Violin plot: {output_dir}/numpy_duration_q{num_qubits}_s{num_samples}_violin.png")
+            print(f"  - Statistics table: {output_dir}/numpy_duration_q{num_qubits}_s{num_samples}_table.md")
+            print("\nThroughput plots:")
+            print(f"  - Bar chart: {output_dir}/numpy_throughput_q{num_qubits}_s{num_samples}_bars.png")
+            print(f"  - Box plot: {output_dir}/numpy_throughput_q{num_qubits}_s{num_samples}_box.png")
+            print(f"  - Violin plot: {output_dir}/numpy_throughput_q{num_qubits}_s{num_samples}_violin.png")
+            print(f"  - Statistics table: {output_dir}/numpy_throughput_q{num_qubits}_s{num_samples}_table.md")
+            
+        except Exception as e:
+            print(f"\nWarning: Visualization generation failed: {e}")
+            print("Benchmark results are still valid.")
 
     # Cleanup
     if not args.output:
