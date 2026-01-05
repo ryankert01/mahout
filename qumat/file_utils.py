@@ -29,7 +29,7 @@ def path_exists(file_path: Union[str, Path]) -> bool:
 
     :param file_path: Path to the file or directory to check.
         Can be either a string or a Path object.
-    :type file_path: str | Path
+    :type file_path: Union[str, Path]
     :returns: True if the path exists, False otherwise.
     :rtype: bool
 
@@ -52,7 +52,7 @@ def ensure_file_exists(file_path: Union[str, Path]) -> Path:
 
     :param file_path: Path to the file to check.
         Can be either a string or a Path object.
-    :type file_path: str | Path
+    :type file_path: Union[str, Path]
     :returns: Path object for the existing file.
     :rtype: Path
     :raises FileNotFoundError: If the file does not exist.
