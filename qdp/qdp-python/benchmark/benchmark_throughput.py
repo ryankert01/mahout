@@ -519,7 +519,6 @@ def main():
         print(BAR)
         
         try:
-            from pathlib import Path
             visualizer = BenchmarkVisualizer()
             output_dir = Path(args.output_dir)
             output_dir.mkdir(parents=True, exist_ok=True)
