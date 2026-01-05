@@ -40,7 +40,22 @@ impl ParquetReader {
     /// * `path` - Path to the Parquet file
     /// * `batch_size` - Optional batch size for reading (defaults to entire file)
     pub fn new<P: AsRef<Path>>(path: P, batch_size: Option<usize>) -> Result<Self> {
-        let file = File::open(path.as_ref())
+        let path = path.as_ref();
+
+        // Check file size to prevent OOM
+        let metadata = std::fs::metadata(path).map_err(|e| {
+            MahoutError::Io(format!("Failed to get file metadata: {}", e))
+        })?;
+        
+        let file_size = metadata.len();
+        if file_size > crate::MAX_FILE_SIZE_BYTES {
+            return Err(MahoutError::InvalidInput(format!(
+                "Parquet file too large: {} bytes (max: {} bytes). Use ParquetStreamingReader for large files.",
+                file_size, crate::MAX_FILE_SIZE_BYTES
+            )));
+        }
+
+        let file = File::open(path)
             .map_err(|e| MahoutError::Io(format!("Failed to open Parquet file: {}", e)))?;
 
         let builder = ParquetRecordBatchReaderBuilder::try_new(file)

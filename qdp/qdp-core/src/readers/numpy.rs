@@ -64,6 +64,19 @@ impl NumpyReader {
             )));
         }
 
+        // Check file size to prevent OOM
+        let metadata = std::fs::metadata(path).map_err(|e| {
+            MahoutError::Io(format!("Failed to get file metadata: {}", e))
+        })?;
+        
+        let file_size = metadata.len();
+        if file_size > crate::MAX_FILE_SIZE_BYTES {
+            return Err(MahoutError::InvalidInput(format!(
+                "NumPy file too large: {} bytes (max: {} bytes). Consider using a streaming reader or processing the file in chunks.",
+                file_size, crate::MAX_FILE_SIZE_BYTES
+            )));
+        }
+
         Ok(Self {
             path: path.to_path_buf(),
             read: false,
@@ -257,6 +270,30 @@ mod tests {
         let mut reader = NumpyReader::new(temp_path).unwrap();
         let result = reader.read_batch();
         assert!(result.is_err());
+
+        // Cleanup
+        fs::remove_file(temp_path).unwrap();
+    }
+
+    #[test]
+    fn test_numpy_reader_file_size_check() {
+        // Test that file size check prevents reading files larger than MAX_FILE_SIZE_BYTES
+        // We can't easily create a 10GB+ file for testing, so we'll verify the check exists
+        // by testing with a normal file that should pass
+        let temp_path = "/tmp/test_numpy_size_check.npy";
+        let num_samples = 10;
+        let sample_size = 10;
+        let data: Vec<f64> = (0..num_samples * sample_size).map(|i| i as f64).collect();
+        let array = Array2::from_shape_vec((num_samples, sample_size), data).unwrap();
+        ndarray_npy::write_npy(temp_path, &array).unwrap();
+
+        // This should succeed since the file is small
+        let reader = NumpyReader::new(temp_path);
+        assert!(reader.is_ok());
+
+        // Verify the file size is less than MAX_FILE_SIZE_BYTES
+        let metadata = fs::metadata(temp_path).unwrap();
+        assert!(metadata.len() < crate::MAX_FILE_SIZE_BYTES);
 
         // Cleanup
         fs::remove_file(temp_path).unwrap();

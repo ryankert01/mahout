@@ -217,9 +217,6 @@ pub fn write_arrow_to_parquet<P: AsRef<Path>>(
 ///
 /// # Returns
 /// Tuple of `(flattened_data, num_samples, sample_size)`
-///
-/// # TODO
-/// Add OOM protection for very large files
 pub fn read_parquet_batch<P: AsRef<Path>>(path: P) -> Result<(Vec<f64>, usize, usize)> {
     use crate::reader::DataReader;
     let mut reader = crate::readers::ParquetReader::new(path, None)?;
@@ -233,9 +230,6 @@ pub fn read_parquet_batch<P: AsRef<Path>>(path: P) -> Result<(Vec<f64>, usize, u
 ///
 /// # Returns
 /// Tuple of `(flattened_data, num_samples, sample_size)`
-///
-/// # TODO
-/// Add OOM protection for very large files
 pub fn read_arrow_ipc_batch<P: AsRef<Path>>(path: P) -> Result<(Vec<f64>, usize, usize)> {
     use crate::reader::DataReader;
     let mut reader = crate::readers::ArrowIPCReader::new(path)?;

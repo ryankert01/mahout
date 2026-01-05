@@ -27,6 +27,10 @@ mod profiling;
 pub use error::{MahoutError, Result};
 pub use gpu::memory::Precision;
 
+/// Maximum file size (10GB) for OOM protection when reading files into memory.
+/// Files larger than this should use streaming readers instead.
+pub const MAX_FILE_SIZE_BYTES: u64 = 10 * 1024 * 1024 * 1024; // 10GB
+
 #[cfg(target_os = "linux")]
 use std::ffi::c_void;
 use std::sync::Arc;
