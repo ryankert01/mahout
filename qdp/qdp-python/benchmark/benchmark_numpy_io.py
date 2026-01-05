@@ -184,10 +184,6 @@ def run_framework_statistical(
     Returns:
         Tuple of (mean_duration, mean_throughput, durations_list, throughputs_list)
     """
-    if not HAS_BENCHMARK_UTILS:
-        print(f"\n[{framework_name}] Statistical mode not available, falling back to standard mode")
-        return benchmark_func()
-    
     print(f"\n[{framework_name}] Statistical mode (warmup={warmup_iters}, repeat={repeat})")
     
     # Warmup phase
