@@ -46,10 +46,13 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
 
-      - name: Install Poetry and dependencies
-        run: |
-          pip install poetry
-          poetry install --extras dev
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync --extra dev
 
       - name: Run tests
-        run: poetry run pytest testing/ -v
+        run: uv run pytest testing/ -v

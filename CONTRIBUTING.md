@@ -21,28 +21,28 @@ Thank you for your interest in contributing to Apache Mahout!
 
 ## 1. Installation
 
-**Prerequisites:** Python 3.10 (>=3.10,<3.11), Poetry, Git
+**Prerequisites:** Python 3.10 (>=3.10,<=3.13), uv, Git
 
-### Install Poetry
+### Install uv
 
 ```bash
-pip install -U poetry
+curl -LsSf https://astral.sh/uv/install.sh | sh
 ```
 
-or follow the instructions in the [Poetry official documentation](https://python-poetry.org/docs/).
+or follow the instructions in the [uv official documentation](https://docs.astral.sh/uv/).
 
 ### Clone and Install Dependencies
 
 ```bash
 git clone https://github.com/apache/mahout.git
 cd mahout
-poetry install --extras dev
+uv sync --extra dev
 ```
 
 ### Set Up Pre-commit Hooks
 
 ```bash
-poetry run pre-commit install
+uv run pre-commit install
 ```
 
 ## 2. Development Workflow
@@ -72,7 +72,7 @@ git push
 Run the test suite using pytest:
 
 ```bash
-poetry run pytest
+uv run pytest
 ```
 
 ### 2.4 Pre-commit Checks
@@ -80,13 +80,13 @@ poetry run pytest
 Run pre-commit hooks:
 
 ```bash
-poetry run pre-commit run
+uv run pre-commit run
 ```
 
 Or run pre-commit hooks on all files:
 
 ```bash
-poetry run pre-commit run --all-files
+uv run pre-commit run --all-files
 ```
 
 ### 2.5 Create a Pull Request
