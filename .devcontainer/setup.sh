@@ -20,13 +20,6 @@ apt-get install -y \
 curl -LsSf https://astral.sh/uv/install.sh | sh
 source $HOME/.local/bin/env
 
-# peotry
-apt update
-apt install apt-utils -y
-apt install pipx -y
-pipx ensurepath
-pipx install poetry
-
 # setup pre-install hook
-poetry install --extras dev
-poetry run pre-commit install
+uv sync --extra dev
+uv run pre-commit install

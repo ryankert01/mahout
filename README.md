@@ -34,8 +34,8 @@ Check out [basic gates](docs/basic_gates.md) for a quick introduction to the bas
 
 To install dependencies, run the following:
 ```
-pip install -U poetry
-poetry install
+curl -LsSf https://astral.sh/uv/install.sh | sh
+uv sync
 ```
 
 ## Roadmap
