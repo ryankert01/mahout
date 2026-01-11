@@ -20,6 +20,7 @@
 #include <cuComplex.h>
 #include <vector_types.h>
 #include <math.h>
+#include <vector>
 
 __global__ void amplitude_encode_kernel(
     const double* __restrict__ input,
@@ -556,7 +557,7 @@ int convert_state_to_float(
 /// 3. One block finalizes the global norm
 /// 4. Second pass: All blocks encode using the computed norm
 ///
-/// Zero/NaN detection: Uses __trap() for early termination
+/// Zero/NaN detection: Sets error flag which is checked on host after kernel completion
 __global__ void amplitude_norm_encode_kernel(
     const double* __restrict__ input,
     cuDoubleComplex* __restrict__ state,
@@ -621,11 +622,8 @@ __global__ void amplitude_norm_encode_kernel(
     }
     __syncthreads();
     
-    // Check for error and early exit
+    // Check for error and skip encoding phase (error will be reported on host)
     if (s_error != 0) {
-        if (threadIdx.x == 0 && blockIdx.x == 0) {
-            __trap(); // Early termination on error
-        }
         return;
     }
     
@@ -725,11 +723,8 @@ __global__ void amplitude_norm_encode_batch_kernel(
     }
     __syncthreads();
     
-    // Check for error
+    // Check for error and skip encoding phase (error will be reported on host)
     if (s_error != 0) {
-        if (threadIdx.x == 0 && block_in_sample == 0) {
-            __trap(); // Early termination
-        }
         return;
     }
     
@@ -925,10 +920,10 @@ int launch_amplitude_norm_encode_batch(
     
     cudaError_t kernel_error = cudaGetLastError();
     
-    // Check for errors
+    // Check for errors using vector for RAII
     if (kernel_error == cudaSuccess) {
-        int* error_flags_h = new int[num_samples];
-        cudaMemcpyAsync(error_flags_h, error_flags_d, num_samples * sizeof(int), cudaMemcpyDeviceToHost, stream);
+        std::vector<int> error_flags_h(num_samples);
+        cudaMemcpyAsync(error_flags_h.data(), error_flags_d, num_samples * sizeof(int), cudaMemcpyDeviceToHost, stream);
         cudaStreamSynchronize(stream);
         
         for (size_t i = 0; i < num_samples; i++) {
@@ -937,8 +932,6 @@ int launch_amplitude_norm_encode_batch(
                 break;
             }
         }
-        
-        delete[] error_flags_h;
     }
     
     // Cleanup
