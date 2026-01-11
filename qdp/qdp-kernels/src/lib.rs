@@ -135,6 +135,35 @@ unsafe extern "C" {
         stream: *mut c_void,
     ) -> i32;
 
+    /// Launch fused norm-encode kernel (single vector)
+    /// Combines L2 norm calculation and encoding in one kernel to reduce overhead
+    /// Returns CUDA error code (0 = success)
+    ///
+    /// # Safety
+    /// Requires valid GPU pointers, must sync before freeing
+    pub fn launch_amplitude_norm_encode(
+        input_d: *const f64,
+        state_d: *mut c_void,
+        input_len: usize,
+        state_len: usize,
+        stream: *mut c_void,
+    ) -> i32;
+
+    /// Launch fused norm-encode kernel (batch)
+    /// Combines L2 norm calculation and encoding in one kernel for batch processing
+    /// Returns CUDA error code (0 = success)
+    ///
+    /// # Safety
+    /// Requires valid GPU pointers, must sync before freeing
+    pub fn launch_amplitude_norm_encode_batch(
+        input_batch_d: *const f64,
+        state_batch_d: *mut c_void,
+        num_samples: usize,
+        input_len: usize,
+        state_len: usize,
+        stream: *mut c_void,
+    ) -> i32;
+
     // TODO: launch_angle_encode, launch_basis_encode
 }
 
@@ -194,6 +223,31 @@ pub extern "C" fn convert_state_to_float(
     _input_state_d: *const CuDoubleComplex,
     _output_state_d: *mut CuComplex,
     _len: usize,
+    _stream: *mut c_void,
+) -> i32 {
+    999
+}
+
+#[cfg(not(target_os = "linux"))]
+#[unsafe(no_mangle)]
+pub extern "C" fn launch_amplitude_norm_encode(
+    _input_d: *const f64,
+    _state_d: *mut c_void,
+    _input_len: usize,
+    _state_len: usize,
+    _stream: *mut c_void,
+) -> i32 {
+    999
+}
+
+#[cfg(not(target_os = "linux"))]
+#[unsafe(no_mangle)]
+pub extern "C" fn launch_amplitude_norm_encode_batch(
+    _input_batch_d: *const f64,
+    _state_batch_d: *mut c_void,
+    _num_samples: usize,
+    _input_len: usize,
+    _state_len: usize,
     _stream: *mut c_void,
 ) -> i32 {
     999

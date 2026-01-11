@@ -21,7 +21,8 @@ use cudarc::driver::{CudaDevice, DevicePtr, DevicePtrMut};
 #[cfg(target_os = "linux")]
 use qdp_kernels::{
     CuComplex, CuDoubleComplex, launch_amplitude_encode, launch_amplitude_encode_f32,
-    launch_l2_norm, launch_l2_norm_batch,
+    launch_amplitude_norm_encode, launch_amplitude_norm_encode_batch, launch_l2_norm,
+    launch_l2_norm_batch,
 };
 
 const EPSILON: f64 = 1e-10;
@@ -636,4 +637,270 @@ fn test_amplitude_encode_dummy_non_linux() {
 
     assert_eq!(result, 999, "Dummy implementation should return 999");
     println!("PASS: Non-Linux dummy implementation returns expected error code");
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn test_fused_norm_encode_basic() {
+    println!("Testing fused norm-encode kernel (basic)...");
+
+    let device = match CudaDevice::new(0) {
+        Ok(d) => d,
+        Err(_) => {
+            println!("SKIP: No CUDA device available");
+            return;
+        }
+    };
+
+    // Test input: [3.0, 4.0] -> normalized to [0.6, 0.8]
+    let input = vec![3.0, 4.0];
+    let state_len = 4; // 2 qubits
+
+    // Allocate device memory
+    let input_d = device.htod_copy(input.clone()).unwrap();
+    let mut state_d = device.alloc_zeros::<CuDoubleComplex>(state_len).unwrap();
+
+    // Launch fused kernel
+    let result = unsafe {
+        launch_amplitude_norm_encode(
+            *input_d.device_ptr() as *const f64,
+            *state_d.device_ptr_mut() as *mut std::ffi::c_void,
+            input.len(),
+            state_len,
+            std::ptr::null_mut(),
+        )
+    };
+
+    assert_eq!(result, 0, "Fused kernel launch should succeed");
+
+    // Copy result back
+    let state_h = device.dtoh_sync_copy(&state_d).unwrap();
+
+    // Verify normalization: [0.6, 0.8, 0.0, 0.0]
+    assert!(
+        (state_h[0].x - 0.6).abs() < EPSILON,
+        "First element should be 0.6"
+    );
+    assert!(
+        (state_h[0].y).abs() < EPSILON,
+        "First element imaginary should be 0"
+    );
+    assert!(
+        (state_h[1].x - 0.8).abs() < EPSILON,
+        "Second element should be 0.8"
+    );
+    assert!(
+        (state_h[1].y).abs() < EPSILON,
+        "Second element imaginary should be 0"
+    );
+    assert!((state_h[2].x).abs() < EPSILON, "Third element should be 0");
+    assert!((state_h[3].x).abs() < EPSILON, "Fourth element should be 0");
+
+    // Verify state is normalized
+    let total_prob: f64 = state_h.iter().map(|c| c.x * c.x + c.y * c.y).sum();
+    assert!(
+        (total_prob - 1.0).abs() < EPSILON,
+        "Total probability should be 1.0"
+    );
+
+    println!("PASS: Fused norm-encode kernel works correctly");
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn test_fused_norm_encode_zero_norm_error() {
+    println!("Testing fused norm-encode with zero norm (error case)...");
+
+    let device = match CudaDevice::new(0) {
+        Ok(d) => d,
+        Err(_) => {
+            println!("SKIP: No CUDA device available");
+            return;
+        }
+    };
+
+    // All zeros should trigger error detection
+    let input = vec![0.0, 0.0, 0.0, 0.0];
+    let state_len = 4;
+
+    let input_d = device.htod_copy(input).unwrap();
+    let mut state_d = device.alloc_zeros::<CuDoubleComplex>(state_len).unwrap();
+
+    let result = unsafe {
+        launch_amplitude_norm_encode(
+            *input_d.device_ptr() as *const f64,
+            *state_d.device_ptr_mut() as *mut std::ffi::c_void,
+            4,
+            state_len,
+            std::ptr::null_mut(),
+        )
+    };
+
+    // Should return CUDA error code for invalid value
+    assert_ne!(result, 0, "Should reject zero norm");
+    println!(
+        "PASS: Fused kernel correctly rejected zero norm with error code {}",
+        result
+    );
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn test_fused_norm_encode_large() {
+    println!("Testing fused norm-encode with large state vector...");
+
+    let device = match CudaDevice::new(0) {
+        Ok(d) => d,
+        Err(_) => {
+            println!("SKIP: No CUDA device available");
+            return;
+        }
+    };
+
+    // Test with 1024 elements (10 qubits)
+    let input_len = 1024;
+    let input: Vec<f64> = (0..input_len).map(|i| (i + 1) as f64).collect();
+    let norm: f64 = input.iter().map(|x| x * x).sum::<f64>().sqrt();
+    let state_len = 1024;
+
+    let input_d = device.htod_copy(input.clone()).unwrap();
+    let mut state_d = device.alloc_zeros::<CuDoubleComplex>(state_len).unwrap();
+
+    let result = unsafe {
+        launch_amplitude_norm_encode(
+            *input_d.device_ptr() as *const f64,
+            *state_d.device_ptr_mut() as *mut std::ffi::c_void,
+            input.len(),
+            state_len,
+            std::ptr::null_mut(),
+        )
+    };
+
+    assert_eq!(result, 0, "Fused kernel launch should succeed");
+
+    let state_h = device.dtoh_sync_copy(&state_d).unwrap();
+
+    // Spot check a few values
+    for i in [0, 100, 500, 1023] {
+        let expected = input[i] / norm;
+        assert!(
+            (state_h[i].x - expected).abs() < EPSILON,
+            "Element {} mismatch",
+            i
+        );
+    }
+
+    // Verify normalization
+    let total_prob: f64 = state_h.iter().map(|c| c.x * c.x + c.y * c.y).sum();
+    assert!(
+        (total_prob - 1.0).abs() < EPSILON,
+        "Total probability should be 1.0"
+    );
+
+    println!("PASS: Large fused norm-encode works correctly");
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn test_fused_batch_norm_encode_basic() {
+    println!("Testing fused batch norm-encode kernel...");
+
+    let device = match CudaDevice::new(0) {
+        Ok(d) => d,
+        Err(_) => {
+            println!("SKIP: No CUDA device available");
+            return;
+        }
+    };
+
+    // Two samples: [3.0, 4.0] and [1.0, 2.0, 2.0]
+    let sample_len = 4;
+    let num_samples = 2;
+    let input: Vec<f64> = vec![3.0, 4.0, 0.0, 0.0, 1.0, 2.0, 2.0, 0.0];
+    let state_len = 4;
+
+    let input_d = device.htod_copy(input.clone()).unwrap();
+    let mut state_d = device
+        .alloc_zeros::<CuDoubleComplex>(num_samples * state_len)
+        .unwrap();
+
+    let result = unsafe {
+        launch_amplitude_norm_encode_batch(
+            *input_d.device_ptr() as *const f64,
+            *state_d.device_ptr_mut() as *mut std::ffi::c_void,
+            num_samples,
+            sample_len,
+            state_len,
+            std::ptr::null_mut(),
+        )
+    };
+
+    assert_eq!(result, 0, "Fused batch kernel should succeed");
+
+    let state_h = device.dtoh_sync_copy(&state_d).unwrap();
+
+    // Check first sample: [3.0, 4.0] -> [0.6, 0.8]
+    assert!(
+        (state_h[0].x - 0.6).abs() < EPSILON,
+        "Sample 1, elem 0 should be 0.6"
+    );
+    assert!(
+        (state_h[1].x - 0.8).abs() < EPSILON,
+        "Sample 1, elem 1 should be 0.8"
+    );
+
+    // Check second sample: [1.0, 2.0, 2.0] -> [1/3, 2/3, 2/3]
+    assert!(
+        (state_h[4].x - 1.0 / 3.0).abs() < EPSILON,
+        "Sample 2, elem 0 should be 1/3"
+    );
+    assert!(
+        (state_h[5].x - 2.0 / 3.0).abs() < EPSILON,
+        "Sample 2, elem 1 should be 2/3"
+    );
+    assert!(
+        (state_h[6].x - 2.0 / 3.0).abs() < EPSILON,
+        "Sample 2, elem 2 should be 2/3"
+    );
+
+    println!("PASS: Fused batch norm-encode works correctly");
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn test_fused_batch_norm_encode_error() {
+    println!("Testing fused batch norm-encode with invalid sample...");
+
+    let device = match CudaDevice::new(0) {
+        Ok(d) => d,
+        Err(_) => {
+            println!("SKIP: No CUDA device available");
+            return;
+        }
+    };
+
+    // Second sample has all zeros
+    let sample_len = 4;
+    let num_samples = 2;
+    let input: Vec<f64> = vec![3.0, 4.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+    let state_len = 4;
+
+    let input_d = device.htod_copy(input).unwrap();
+    let mut state_d = device
+        .alloc_zeros::<CuDoubleComplex>(num_samples * state_len)
+        .unwrap();
+
+    let result = unsafe {
+        launch_amplitude_norm_encode_batch(
+            *input_d.device_ptr() as *const f64,
+            *state_d.device_ptr_mut() as *mut std::ffi::c_void,
+            num_samples,
+            sample_len,
+            state_len,
+            std::ptr::null_mut(),
+        )
+    };
+
+    assert_ne!(result, 0, "Should reject batch with zero norm sample");
+    println!("PASS: Fused batch kernel correctly rejected invalid sample");
 }

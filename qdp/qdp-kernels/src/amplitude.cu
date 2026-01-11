@@ -547,6 +547,408 @@ int convert_state_to_float(
     return (int)cudaGetLastError();
 }
 
+/// Fused kernel: compute L2 norm and encode in a single pass
+/// This reduces kernel launch overhead and eliminates intermediate norm buffer
+///
+/// Strategy:
+/// 1. First pass: Each block computes partial L2 norm using block reduction
+/// 2. Grid-level synchronization using __threadfence() and atomic flags
+/// 3. One block finalizes the global norm
+/// 4. Second pass: All blocks encode using the computed norm
+///
+/// Zero/NaN detection: Uses __trap() for early termination
+__global__ void amplitude_norm_encode_kernel(
+    const double* __restrict__ input,
+    cuDoubleComplex* __restrict__ state,
+    size_t input_len,
+    size_t state_len,
+    double* __restrict__ global_norm_squared,
+    int* __restrict__ sync_flag,
+    int* __restrict__ error_flag
+) {
+    // Phase 1: Compute partial L2 norm
+    const size_t vec_idx = blockIdx.x * blockDim.x + threadIdx.x;
+    const size_t stride = gridDim.x * blockDim.x;
+    
+    double local_sum = 0.0;
+    
+    // Process two elements per iteration via double2
+    size_t vec_offset = vec_idx;
+    size_t offset = vec_offset * 2;
+    while (offset + 1 < input_len) {
+        const double2 v = __ldg(reinterpret_cast<const double2*>(input) + vec_offset);
+        local_sum += v.x * v.x + v.y * v.y;
+        vec_offset += stride;
+        offset = vec_offset * 2;
+    }
+    
+    // Handle tail element if input_len is odd
+    if (offset < input_len) {
+        const double v = __ldg(input + offset);
+        local_sum += v * v;
+    }
+    
+    // Block-level reduction
+    const double block_sum = block_reduce_sum(local_sum);
+    
+    // First thread of each block atomically adds to global norm
+    if (threadIdx.x == 0) {
+        atomicAdd(global_norm_squared, block_sum);
+        
+        // Increment sync counter
+        int old_count = atomicAdd(sync_flag, 1);
+        
+        // Last block to arrive finalizes the norm
+        if (old_count == gridDim.x - 1) {
+            double norm_sq = *global_norm_squared;
+            
+            // Validate: check for zero or NaN
+            if (norm_sq <= 0.0 || !isfinite(norm_sq)) {
+                *error_flag = 1; // Signal error
+            }
+        }
+    }
+    
+    // Grid-level synchronization: wait for norm computation
+    // Use volatile to prevent compiler optimization
+    __shared__ volatile int s_error;
+    if (threadIdx.x == 0) {
+        // Busy-wait until all blocks have contributed
+        while (atomicAdd(sync_flag, 0) < gridDim.x) {
+            // Spin
+        }
+        s_error = *error_flag;
+    }
+    __syncthreads();
+    
+    // Check for error and early exit
+    if (s_error != 0) {
+        if (threadIdx.x == 0 && blockIdx.x == 0) {
+            __trap(); // Early termination on error
+        }
+        return;
+    }
+    
+    // Phase 2: Encode using computed norm
+    const double inv_norm = rsqrt(*global_norm_squared);
+    
+    // Each thread handles two state amplitudes
+    size_t idx = blockIdx.x * blockDim.x + threadIdx.x;
+    size_t state_idx_base = idx * 2;
+    
+    if (state_idx_base >= state_len) return;
+    
+    double v1 = 0.0;
+    double v2 = 0.0;
+    
+    if (state_idx_base + 1 < input_len) {
+        const double2 loaded = __ldg(reinterpret_cast<const double2*>(input) + idx);
+        v1 = loaded.x;
+        v2 = loaded.y;
+    } else if (state_idx_base < input_len) {
+        v1 = __ldg(input + state_idx_base);
+    }
+    
+    state[state_idx_base] = make_cuDoubleComplex(v1 * inv_norm, 0.0);
+    
+    if (state_idx_base + 1 < state_len) {
+        state[state_idx_base + 1] = make_cuDoubleComplex(v2 * inv_norm, 0.0);
+    }
+}
+
+/// Fused kernel for batch processing: compute L2 norms and encode in a single pass
+/// This is more complex as we need per-sample synchronization
+__global__ void amplitude_norm_encode_batch_kernel(
+    const double* __restrict__ input_batch,
+    cuDoubleComplex* __restrict__ state_batch,
+    size_t num_samples,
+    size_t input_len,
+    size_t state_len,
+    double* __restrict__ global_norms_squared,
+    int* __restrict__ sync_flags,
+    int* __restrict__ error_flags,
+    size_t blocks_per_sample
+) {
+    // Determine which sample this block is working on
+    const size_t sample_idx = blockIdx.x / blocks_per_sample;
+    if (sample_idx >= num_samples) return;
+    
+    const size_t block_in_sample = blockIdx.x % blocks_per_sample;
+    const size_t input_base = sample_idx * input_len;
+    const size_t state_base = sample_idx * state_len;
+    
+    // Phase 1: Compute partial L2 norm for this sample
+    const size_t vec_idx = block_in_sample * blockDim.x + threadIdx.x;
+    const size_t stride = blockDim.x * blocks_per_sample;
+    
+    double local_sum = 0.0;
+    
+    size_t vec_offset = vec_idx;
+    size_t offset = vec_offset * 2;
+    while (offset + 1 < input_len) {
+        const double2 v = __ldg(reinterpret_cast<const double2*>(input_batch + input_base) + vec_offset);
+        local_sum += v.x * v.x + v.y * v.y;
+        vec_offset += stride;
+        offset = vec_offset * 2;
+    }
+    
+    if (offset < input_len) {
+        const double v = __ldg(input_batch + input_base + offset);
+        local_sum += v * v;
+    }
+    
+    const double block_sum = block_reduce_sum(local_sum);
+    
+    // First thread of each block atomically adds to this sample's norm
+    if (threadIdx.x == 0) {
+        atomicAdd(&global_norms_squared[sample_idx], block_sum);
+        
+        int old_count = atomicAdd(&sync_flags[sample_idx], 1);
+        
+        // Last block for this sample finalizes the norm
+        if (old_count == blocks_per_sample - 1) {
+            double norm_sq = global_norms_squared[sample_idx];
+            
+            if (norm_sq <= 0.0 || !isfinite(norm_sq)) {
+                error_flags[sample_idx] = 1;
+            }
+        }
+    }
+    
+    // Wait for norm computation for this sample
+    __shared__ volatile int s_error;
+    if (threadIdx.x == 0) {
+        while (atomicAdd(&sync_flags[sample_idx], 0) < blocks_per_sample) {
+            // Spin-wait
+        }
+        s_error = error_flags[sample_idx];
+    }
+    __syncthreads();
+    
+    // Check for error
+    if (s_error != 0) {
+        if (threadIdx.x == 0 && block_in_sample == 0) {
+            __trap(); // Early termination
+        }
+        return;
+    }
+    
+    // Phase 2: Encode this sample
+    const double inv_norm = rsqrt(global_norms_squared[sample_idx]);
+    
+    // Each thread handles two state amplitudes
+    const size_t elem_idx = block_in_sample * blockDim.x + threadIdx.x;
+    const size_t elem_pair = elem_idx;
+    const size_t elem_offset = elem_pair * 2;
+    
+    if (elem_offset >= state_len) return;
+    
+    double v1, v2;
+    if (elem_offset + 1 < input_len) {
+        const double2 vec_data = __ldg(reinterpret_cast<const double2*>(input_batch + input_base) + elem_pair);
+        v1 = vec_data.x;
+        v2 = vec_data.y;
+    } else if (elem_offset < input_len) {
+        v1 = __ldg(input_batch + input_base + elem_offset);
+        v2 = 0.0;
+    } else {
+        v1 = v2 = 0.0;
+    }
+    
+    const cuDoubleComplex c1 = make_cuDoubleComplex(v1 * inv_norm, 0.0);
+    const cuDoubleComplex c2 = make_cuDoubleComplex(v2 * inv_norm, 0.0);
+    
+    state_batch[state_base + elem_offset] = c1;
+    if (elem_offset + 1 < state_len) {
+        state_batch[state_base + elem_offset + 1] = c2;
+    }
+}
+
+/// Launch fused norm-encode kernel (single vector)
+/// Combines L2 norm calculation and encoding in one kernel
+///
+/// # Arguments
+/// * input_d - Device pointer to input data
+/// * state_d - Device pointer to output state vector
+/// * input_len - Number of input elements
+/// * state_len - Target state vector size (2^num_qubits)
+/// * stream - CUDA stream for async execution
+///
+/// # Returns
+/// CUDA error code (0 = cudaSuccess)
+int launch_amplitude_norm_encode(
+    const double* input_d,
+    void* state_d,
+    size_t input_len,
+    size_t state_len,
+    cudaStream_t stream
+) {
+    if (input_len == 0 || state_len == 0) {
+        return cudaErrorInvalidValue;
+    }
+    
+    cuDoubleComplex* state_complex_d = static_cast<cuDoubleComplex*>(state_d);
+    
+    // Allocate workspace for norm and synchronization
+    double* norm_squared_d;
+    int* sync_flag_d;
+    int* error_flag_d;
+    
+    cudaError_t alloc_status;
+    
+    alloc_status = cudaMallocAsync(&norm_squared_d, sizeof(double), stream);
+    if (alloc_status != cudaSuccess) return alloc_status;
+    
+    alloc_status = cudaMallocAsync(&sync_flag_d, sizeof(int), stream);
+    if (alloc_status != cudaSuccess) {
+        cudaFreeAsync(norm_squared_d, stream);
+        return alloc_status;
+    }
+    
+    alloc_status = cudaMallocAsync(&error_flag_d, sizeof(int), stream);
+    if (alloc_status != cudaSuccess) {
+        cudaFreeAsync(norm_squared_d, stream);
+        cudaFreeAsync(sync_flag_d, stream);
+        return alloc_status;
+    }
+    
+    // Initialize workspace
+    cudaMemsetAsync(norm_squared_d, 0, sizeof(double), stream);
+    cudaMemsetAsync(sync_flag_d, 0, sizeof(int), stream);
+    cudaMemsetAsync(error_flag_d, 0, sizeof(int), stream);
+    
+    const int blockSize = 256;
+    const int gridSize = (state_len / 2 + blockSize - 1) / blockSize;
+    
+    amplitude_norm_encode_kernel<<<gridSize, blockSize, 0, stream>>>(
+        input_d,
+        state_complex_d,
+        input_len,
+        state_len,
+        norm_squared_d,
+        sync_flag_d,
+        error_flag_d
+    );
+    
+    cudaError_t kernel_error = cudaGetLastError();
+    
+    // Check for errors (copy error flag to host)
+    int error_flag_h = 0;
+    if (kernel_error == cudaSuccess) {
+        cudaMemcpyAsync(&error_flag_h, error_flag_d, sizeof(int), cudaMemcpyDeviceToHost, stream);
+        cudaStreamSynchronize(stream);
+        
+        if (error_flag_h != 0) {
+            kernel_error = cudaErrorInvalidValue; // Zero or NaN norm detected
+        }
+    }
+    
+    // Cleanup
+    cudaFreeAsync(norm_squared_d, stream);
+    cudaFreeAsync(sync_flag_d, stream);
+    cudaFreeAsync(error_flag_d, stream);
+    
+    return (int)kernel_error;
+}
+
+/// Launch fused norm-encode kernel (batch)
+int launch_amplitude_norm_encode_batch(
+    const double* input_batch_d,
+    void* state_batch_d,
+    size_t num_samples,
+    size_t input_len,
+    size_t state_len,
+    cudaStream_t stream
+) {
+    if (num_samples == 0 || input_len == 0 || state_len == 0) {
+        return cudaErrorInvalidValue;
+    }
+    
+    cuDoubleComplex* state_complex_d = static_cast<cuDoubleComplex*>(state_batch_d);
+    
+    // Allocate workspace
+    double* norms_squared_d;
+    int* sync_flags_d;
+    int* error_flags_d;
+    
+    cudaError_t alloc_status;
+    
+    alloc_status = cudaMallocAsync(&norms_squared_d, num_samples * sizeof(double), stream);
+    if (alloc_status != cudaSuccess) return alloc_status;
+    
+    alloc_status = cudaMallocAsync(&sync_flags_d, num_samples * sizeof(int), stream);
+    if (alloc_status != cudaSuccess) {
+        cudaFreeAsync(norms_squared_d, stream);
+        return alloc_status;
+    }
+    
+    alloc_status = cudaMallocAsync(&error_flags_d, num_samples * sizeof(int), stream);
+    if (alloc_status != cudaSuccess) {
+        cudaFreeAsync(norms_squared_d, stream);
+        cudaFreeAsync(sync_flags_d, stream);
+        return alloc_status;
+    }
+    
+    // Initialize workspace
+    cudaMemsetAsync(norms_squared_d, 0, num_samples * sizeof(double), stream);
+    cudaMemsetAsync(sync_flags_d, 0, num_samples * sizeof(int), stream);
+    cudaMemsetAsync(error_flags_d, 0, num_samples * sizeof(int), stream);
+    
+    const int blockSize = 256;
+    const size_t elements_per_block = blockSize * 2;
+    size_t blocks_per_sample = (state_len / 2 + blockSize - 1) / blockSize;
+    const size_t max_blocks_per_sample = 32;
+    if (blocks_per_sample == 0) blocks_per_sample = 1;
+    if (blocks_per_sample > max_blocks_per_sample) {
+        blocks_per_sample = max_blocks_per_sample;
+    }
+    
+    size_t gridSize = num_samples * blocks_per_sample;
+    const size_t max_grid = 65535;
+    if (gridSize > max_grid) {
+        blocks_per_sample = max_grid / num_samples;
+        if (blocks_per_sample == 0) blocks_per_sample = 1;
+        gridSize = num_samples * blocks_per_sample;
+    }
+    
+    amplitude_norm_encode_batch_kernel<<<gridSize, blockSize, 0, stream>>>(
+        input_batch_d,
+        state_complex_d,
+        num_samples,
+        input_len,
+        state_len,
+        norms_squared_d,
+        sync_flags_d,
+        error_flags_d,
+        blocks_per_sample
+    );
+    
+    cudaError_t kernel_error = cudaGetLastError();
+    
+    // Check for errors
+    if (kernel_error == cudaSuccess) {
+        int* error_flags_h = new int[num_samples];
+        cudaMemcpyAsync(error_flags_h, error_flags_d, num_samples * sizeof(int), cudaMemcpyDeviceToHost, stream);
+        cudaStreamSynchronize(stream);
+        
+        for (size_t i = 0; i < num_samples; i++) {
+            if (error_flags_h[i] != 0) {
+                kernel_error = cudaErrorInvalidValue;
+                break;
+            }
+        }
+        
+        delete[] error_flags_h;
+    }
+    
+    // Cleanup
+    cudaFreeAsync(norms_squared_d, stream);
+    cudaFreeAsync(sync_flags_d, stream);
+    cudaFreeAsync(error_flags_d, stream);
+    
+    return (int)kernel_error;
+}
+
 // TODO: Future encoding methods:
 // - launch_angle_encode (angle encoding)
 // - launch_basis_encode (basis encoding)
