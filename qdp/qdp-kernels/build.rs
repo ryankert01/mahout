@@ -29,6 +29,9 @@ use std::process::Command;
 fn main() {
     // Tell Cargo to rerun this script if the kernel source changes
     println!("cargo:rerun-if-changed=src/amplitude.cu");
+    
+    // Declare the no_cuda cfg option
+    println!("cargo::rustc-check-cfg=cfg(no_cuda)");
 
     // Check if CUDA is available by looking for nvcc
     let has_cuda = Command::new("nvcc").arg("--version").output().is_ok();
@@ -40,6 +43,9 @@ fn main() {
             "cargo:warning=The project will build, but GPU functionality will not be available."
         );
         println!("cargo:warning=For production deployment, ensure CUDA toolkit is installed.");
+        
+        // Set a configuration flag that can be used in Rust code
+        println!("cargo:rustc-cfg=no_cuda");
         return;
     }
 
