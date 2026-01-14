@@ -29,10 +29,10 @@ use crate::gpu::cuda_ffi::cudaMemsetAsync;
 #[cfg(target_os = "linux")]
 use crate::gpu::memory::{ensure_device_memory_available, map_allocation_error};
 #[cfg(target_os = "linux")]
-use cudarc::driver::{DevicePtr, DevicePtrMut};
+use cudarc::driver::DevicePtr;
 #[cfg(target_os = "linux")]
 use qdp_kernels::{
-    launch_amplitude_encode, launch_amplitude_encode_batch, launch_l2_norm, launch_l2_norm_batch,
+    launch_amplitude_encode, launch_amplitude_norm_encode, launch_amplitude_norm_encode_batch,
 };
 #[cfg(target_os = "linux")]
 use std::ffi::c_void;
@@ -91,18 +91,6 @@ impl QuantumEncoder for AmplitudeEncoder {
                     })?
                 };
 
-                // GPU-accelerated norm for medium+ inputs, CPU fallback for tiny payloads
-                let inv_norm = if host_data.len() >= GPU_NORM_THRESHOLD {
-                    Self::calculate_inv_norm_gpu(
-                        _device,
-                        *input_slice.device_ptr() as *const f64,
-                        host_data.len(),
-                    )?
-                } else {
-                    let norm = Preprocessor::calculate_l2_norm(host_data)?;
-                    1.0 / norm
-                };
-
                 let state_ptr = state_vector.ptr_f64().ok_or_else(|| {
                     let actual = state_vector.precision();
                     MahoutError::InvalidInput(format!(
@@ -111,7 +99,23 @@ impl QuantumEncoder for AmplitudeEncoder {
                     ))
                 })?;
 
-                let ret = {
+                // Use fused kernel for GPU norm threshold and above
+                let ret = if host_data.len() >= GPU_NORM_THRESHOLD {
+                    crate::profile_scope!("GPU::FusedNormEncodeKernel");
+                    unsafe {
+                        launch_amplitude_norm_encode(
+                            *input_slice.device_ptr() as *const f64,
+                            state_ptr as *mut c_void,
+                            host_data.len(),
+                            state_len,
+                            std::ptr::null_mut(), // default stream
+                        )
+                    }
+                } else {
+                    // For small inputs, use CPU norm + encode kernel (less overhead)
+                    let norm = Preprocessor::calculate_l2_norm(host_data)?;
+                    let inv_norm = 1.0 / norm;
+
                     crate::profile_scope!("GPU::KernelLaunch");
                     unsafe {
                         launch_amplitude_encode(
@@ -132,6 +136,8 @@ impl QuantumEncoder for AmplitudeEncoder {
                             host_data.len(),
                             num_qubits,
                         )
+                    } else if ret == 1 {
+                        "Input data has zero or invalid norm".to_string()
                     } else {
                         format!(
                             "Kernel launch failed with CUDA error code: {} ({})",
@@ -204,75 +210,38 @@ impl QuantumEncoder for AmplitudeEncoder {
             })?
         };
 
-        // Compute inverse norms on GPU using warp-reduced kernel
-        let inv_norms_gpu = {
-            crate::profile_scope!("GPU::BatchNormKernel");
-            let mut buffer = device.alloc_zeros::<f64>(num_samples).map_err(|e| {
-                MahoutError::MemoryAllocation(format!("Failed to allocate norm buffer: {:?}", e))
-            })?;
+        let state_ptr = batch_state_vector.ptr_f64().ok_or_else(|| {
+            MahoutError::InvalidInput(
+                "Batch state vector precision mismatch (expected float64 buffer)".to_string(),
+            )
+        })?;
 
-            let ret = unsafe {
-                launch_l2_norm_batch(
-                    *input_batch_gpu.device_ptr() as *const f64,
-                    num_samples,
-                    sample_size,
-                    *buffer.device_ptr_mut() as *mut f64,
-                    std::ptr::null_mut(), // default stream
-                )
-            };
-
-            if ret != 0 {
-                return Err(MahoutError::KernelLaunch(format!(
-                    "Norm reduction kernel failed: {} ({})",
-                    ret,
-                    cuda_error_to_string(ret)
-                )));
-            }
-
-            buffer
-        };
-
-        // Validate norms on host to catch zero or NaN samples early
-        {
-            crate::profile_scope!("GPU::NormValidation");
-            let host_inv_norms = device
-                .dtoh_sync_copy(&inv_norms_gpu)
-                .map_err(|e| MahoutError::Cuda(format!("Failed to copy norms to host: {:?}", e)))?;
-
-            if host_inv_norms.iter().any(|v| !v.is_finite() || *v == 0.0) {
-                return Err(MahoutError::InvalidInput(
-                    "One or more samples have zero or invalid norm".to_string(),
-                ));
-            }
-        }
-
-        // Launch batch kernel
-        {
-            crate::profile_scope!("GPU::BatchKernelLaunch");
-            let state_ptr = batch_state_vector.ptr_f64().ok_or_else(|| {
-                MahoutError::InvalidInput(
-                    "Batch state vector precision mismatch (expected float64 buffer)".to_string(),
-                )
-            })?;
-            let ret = unsafe {
-                launch_amplitude_encode_batch(
+        // Use fused kernel: combines norm computation and encoding
+        let ret = {
+            crate::profile_scope!("GPU::FusedBatchNormEncodeKernel");
+            unsafe {
+                launch_amplitude_norm_encode_batch(
                     *input_batch_gpu.device_ptr() as *const f64,
                     state_ptr as *mut c_void,
-                    *inv_norms_gpu.device_ptr() as *const f64,
                     num_samples,
                     sample_size,
                     state_len,
                     std::ptr::null_mut(), // default stream
                 )
-            };
+            }
+        };
 
-            if ret != 0 {
-                return Err(MahoutError::KernelLaunch(format!(
-                    "Batch kernel launch failed: {} ({})",
+        if ret != 0 {
+            let error_msg = if ret == 1 {
+                "One or more samples have zero or invalid norm".to_string()
+            } else {
+                format!(
+                    "Fused batch kernel launch failed: {} ({})",
                     ret,
                     cuda_error_to_string(ret)
-                )));
-            }
+                )
+            };
+            return Err(MahoutError::KernelLaunch(error_msg));
         }
 
         // Synchronize
@@ -408,49 +377,6 @@ impl AmplitudeEncoder {
 }
 
 impl AmplitudeEncoder {
-    /// Compute inverse L2 norm on GPU using the reduction kernel.
-    #[cfg(target_os = "linux")]
-    fn calculate_inv_norm_gpu(
-        device: &Arc<CudaDevice>,
-        input_ptr: *const f64,
-        len: usize,
-    ) -> Result<f64> {
-        crate::profile_scope!("GPU::NormSingle");
-
-        let mut norm_buffer = device.alloc_zeros::<f64>(1).map_err(|e| {
-            MahoutError::MemoryAllocation(format!("Failed to allocate norm buffer: {:?}", e))
-        })?;
-
-        let ret = unsafe {
-            launch_l2_norm(
-                input_ptr,
-                len,
-                *norm_buffer.device_ptr_mut() as *mut f64,
-                std::ptr::null_mut(), // default stream
-            )
-        };
-
-        if ret != 0 {
-            return Err(MahoutError::KernelLaunch(format!(
-                "Norm kernel failed: {} ({})",
-                ret,
-                cuda_error_to_string(ret)
-            )));
-        }
-
-        let inv_norm_host = device
-            .dtoh_sync_copy(&norm_buffer)
-            .map_err(|e| MahoutError::Cuda(format!("Failed to copy norm to host: {:?}", e)))?;
-
-        let inv_norm = inv_norm_host.first().copied().unwrap_or(0.0);
-        if inv_norm == 0.0 || !inv_norm.is_finite() {
-            return Err(MahoutError::InvalidInput(
-                "Input data has zero norm".to_string(),
-            ));
-        }
-
-        Ok(inv_norm)
-    }
 }
 
 /// Convert CUDA error code to human-readable string
