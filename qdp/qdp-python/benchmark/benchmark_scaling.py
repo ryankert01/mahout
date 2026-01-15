@@ -53,6 +53,19 @@ from typing import Any, Callable, Dict, List, Optional
 
 import numpy as np
 
+# Add parent directory to path for benchmark module imports
+_BENCHMARK_DIR = Path(__file__).parent
+if str(_BENCHMARK_DIR.parent) not in sys.path:
+    sys.path.insert(0, str(_BENCHMARK_DIR.parent))
+
+# Import dataset module
+try:
+    from benchmark.datasets import get_dataset
+
+    HAS_DATASETS = True
+except ImportError:
+    HAS_DATASETS = False
+
 # Default output directory
 DEFAULT_OUTPUT_DIR = Path(__file__).parent / "results"
 
@@ -299,9 +312,24 @@ def run_scaling_benchmark(
     frameworks: List[str],
     warmup: int,
     runs: int,
+    dataset_name: str = "synthetic",
 ) -> List[BenchmarkResult]:
     """Run benchmark across different x-axis values."""
     results = []
+
+    # For non-synthetic datasets, load once and cache
+    dataset_obj = None
+    dataset_max_samples = None
+    if dataset_name.lower() != "synthetic" and HAS_DATASETS:
+        try:
+            # Create dataset without sample limit to check max available
+            dataset_obj = get_dataset(dataset_name)
+            dataset_max_samples = dataset_obj.n_samples
+            print(f"\nDataset '{dataset_name}' loaded: {dataset_max_samples} samples available")
+        except Exception as e:
+            print(f"Warning: Could not load dataset '{dataset_name}': {e}")
+            print("Falling back to synthetic data")
+            dataset_name = "synthetic"
 
     for x_val in x_values:
         # Determine actual parameters based on x-axis
@@ -317,12 +345,23 @@ def run_scaling_benchmark(
         else:
             raise ValueError(f"Unknown x-axis: {x_axis}")
 
+        # Check sample limit for real datasets
+        if dataset_max_samples is not None and actual_samples > dataset_max_samples:
+            print(f"\nWarning: Requested {actual_samples} samples but dataset has {dataset_max_samples}")
+            print(f"Using {dataset_max_samples} samples instead")
+            actual_samples = dataset_max_samples
+
         print(f"\n{'='*60}")
         print(f"Benchmarking: {x_axis}={x_val}, qubits={actual_qubits}, samples={actual_samples}")
         print("=" * 60)
 
         # Generate data for this configuration
-        data = generate_data(actual_samples, actual_qubits)
+        if dataset_name.lower() == "synthetic" or not HAS_DATASETS:
+            data = generate_data(actual_samples, actual_qubits)
+        else:
+            # Use dataset module
+            ds = get_dataset(dataset_name, n_samples=actual_samples, seed=42)
+            data, _ = ds.prepare_for_qubits(actual_qubits, normalize=True)
 
         for fw in frameworks:
             print(f"\n  Running {fw}...")
@@ -498,6 +537,14 @@ def main():
         help="Sample counts to benchmark (default: 100 250 500 1000 2000)",
     )
 
+    # Dataset selection
+    parser.add_argument(
+        "--dataset",
+        type=str,
+        default="synthetic",
+        help="Dataset to use: synthetic, mnist, mnist_full, iris, blobs (default: synthetic)",
+    )
+
     # Qubit configuration
     parser.add_argument(
         "--qubits",
@@ -597,6 +644,7 @@ def main():
     print("=" * 60)
     print("SCALING BENCHMARK")
     print("=" * 60)
+    print(f"Dataset:    {args.dataset}")
     print(f"X-axis:     {args.x_axis} = {x_values}")
     print(f"Y-axis:     {args.y_axis}")
     print(f"Qubits:     {n_qubits}" if args.x_axis != "qubits" else f"Qubits:     {args.qubits}")
@@ -616,6 +664,10 @@ def main():
     if "qiskit" in [f.lower() for f in args.frameworks]:
         print("Note: Qiskit is significantly slower than other frameworks")
 
+    # Check dataset availability
+    if args.dataset.lower() != "synthetic" and not HAS_DATASETS:
+        print(f"Warning: Dataset module not available, falling back to synthetic")
+
     # Run benchmarks (GPU already selected via CUDA_VISIBLE_DEVICES)
     results = run_scaling_benchmark(
         x_axis=args.x_axis,
@@ -625,6 +677,7 @@ def main():
         frameworks=args.frameworks,
         warmup=args.warmup,
         runs=args.runs,
+        dataset_name=args.dataset,
     )
 
     # Print summary

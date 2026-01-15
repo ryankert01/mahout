@@ -286,3 +286,91 @@ class TestSyntheticBlobsDataset:
         """Test getting blobs by name."""
         dataset = get_dataset("blobs", n_samples=50)
         assert "blobs" in dataset.name.lower()
+
+
+class TestFullMNISTDataset:
+    """Tests for FullMNISTDataset."""
+
+    def test_basic_creation(self):
+        """Test basic dataset creation."""
+        from benchmark.datasets import FullMNISTDataset
+
+        dataset = FullMNISTDataset(n_samples=100)
+        assert "mnist_full" in dataset.name.lower()
+
+    def test_sample_count(self):
+        """Test that we can load many samples."""
+        from benchmark.datasets import FullMNISTDataset
+
+        # Test with a moderate sample count
+        dataset = FullMNISTDataset(n_samples=5000)
+        assert dataset.n_samples == 5000
+
+    def test_prepare_for_qubits(self):
+        """Test prepare_for_qubits generates correct shape."""
+        from benchmark.datasets import FullMNISTDataset
+
+        dataset = FullMNISTDataset(n_samples=100)
+        X, y = dataset.prepare_for_qubits(n_qubits=9)  # 512 features
+
+        assert X.shape == (100, 512)
+        assert y is not None
+        assert len(y) == 100
+
+    def test_downsampling(self):
+        """Test downsampling to smaller qubit count."""
+        from benchmark.datasets import FullMNISTDataset
+
+        dataset = FullMNISTDataset(n_samples=50)
+        X, y = dataset.prepare_for_qubits(n_qubits=6)  # 64 features (8x8)
+
+        assert X.shape == (50, 64)
+
+    def test_upsampling(self):
+        """Test padding to larger qubit count."""
+        from benchmark.datasets import FullMNISTDataset
+
+        dataset = FullMNISTDataset(n_samples=50)
+        X, y = dataset.prepare_for_qubits(n_qubits=10)  # 1024 features
+
+        assert X.shape == (50, 1024)
+
+    def test_binary_filtering(self):
+        """Test binary classification filtering."""
+        from benchmark.datasets import FullMNISTDataset
+
+        dataset = FullMNISTDataset(class_0=0, class_1=1, n_samples=200)
+        X, y = dataset.prepare_for_qubits(n_qubits=9)
+
+        assert set(np.unique(y)).issubset({0, 1})
+        assert "0" in dataset.name and "1" in dataset.name
+
+    def test_multiclass_labels(self):
+        """Test multiclass labels (0-9)."""
+        from benchmark.datasets import FullMNISTDataset
+
+        dataset = FullMNISTDataset(n_samples=1000)
+        X, y = dataset.prepare_for_qubits(n_qubits=9)
+
+        # Should have multiple digit classes
+        assert len(np.unique(y)) > 2
+
+    def test_normalization(self):
+        """Test that normalization produces unit vectors."""
+        from benchmark.datasets import FullMNISTDataset
+
+        dataset = FullMNISTDataset(n_samples=50)
+        X, _ = dataset.prepare_for_qubits(n_qubits=8, normalize=True)
+
+        norms = np.linalg.norm(X, axis=1)
+        np.testing.assert_array_almost_equal(norms, np.ones(50), decimal=5)
+
+    def test_get_by_name(self):
+        """Test getting full MNIST by name."""
+        dataset = get_dataset("mnist_full", n_samples=100)
+        assert "mnist_full" in dataset.name.lower()
+
+    def test_get_by_alias(self):
+        """Test getting full MNIST by alias."""
+        dataset = get_dataset("full_mnist", n_samples=100)
+        assert "mnist_full" in dataset.name.lower()

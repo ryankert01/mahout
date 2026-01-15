@@ -19,7 +19,8 @@ This package provides standardized datasets for benchmarking quantum
 data processing pipelines:
 
 - **SyntheticDataset**: Random vectors with reproducible seeds
-- **MNISTBinaryDataset**: Binary MNIST classification
+- **MNISTBinaryDataset**: Binary MNIST classification (8x8, ~1.8k samples)
+- **FullMNISTDataset**: Full MNIST dataset (28x28, 70k samples)
 - **IrisBinaryDataset**: Binary Iris classification
 - **SyntheticBlobsDataset**: Configurable synthetic clusters
 
@@ -28,6 +29,11 @@ Example:
     >>> dataset = SyntheticDataset(n_samples=100, seed=42)
     >>> X, y = dataset.prepare_for_qubits(n_qubits=4)
     >>> X.shape  # (100, 16) - ready for 4-qubit encoding
+
+    >>> from benchmark.datasets import FullMNISTDataset
+    >>> dataset = FullMNISTDataset(n_samples=10000)
+    >>> X, y = dataset.prepare_for_qubits(n_qubits=10)
+    >>> X.shape  # (10000, 1024) - ready for 10-qubit encoding
 """
 
 from .base import BenchmarkDataset, get_dataset
@@ -45,7 +51,7 @@ except ImportError:
 
 # Image datasets (require sklearn for MNIST)
 try:
-    from .image import MNISTBinaryDataset
+    from .image import FullMNISTDataset, MNISTBinaryDataset
 
     HAS_IMAGE = True
 except ImportError:
@@ -61,4 +67,4 @@ if HAS_TABULAR:
     __all__.extend(["IrisBinaryDataset", "SyntheticBlobsDataset"])
 
 if HAS_IMAGE:
-    __all__.append("MNISTBinaryDataset")
+    __all__.extend(["MNISTBinaryDataset", "FullMNISTDataset"])

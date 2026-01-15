@@ -174,6 +174,177 @@ class MNISTBinaryDataset(BenchmarkDataset):
         return result.reshape(n_samples, target_dim)
 
 
-# Register the dataset
+class FullMNISTDataset(BenchmarkDataset):
+    """Full MNIST dataset (70k samples, 28x28 images).
+
+    Uses sklearn's fetch_openml for the complete MNIST dataset.
+    Supports optional binary classification filtering.
+
+    Args:
+        n_samples: Maximum number of samples to use (None for all ~70k).
+        class_0: Optional digit(s) for class 0 (for binary task).
+        class_1: Optional digit(s) for class 1 (for binary task).
+        seed: Random seed for shuffling.
+
+    Example:
+        >>> dataset = FullMNISTDataset(n_samples=10000)
+        >>> X, y = dataset.prepare_for_qubits(n_qubits=10)  # 1024 features
+        >>> X.shape
+        (10000, 1024)
+
+        >>> # Binary classification (0 vs 1)
+        >>> dataset = FullMNISTDataset(class_0=0, class_1=1, n_samples=5000)
+        >>> X, y = dataset.prepare_for_qubits(n_qubits=9)
+        >>> set(y)  # {0, 1}
+    """
+
+    def __init__(
+        self,
+        n_samples: Optional[int] = None,
+        class_0: Optional[Union[int, List[int]]] = None,
+        class_1: Optional[Union[int, List[int]]] = None,
+        seed: int = 42,
+    ):
+        self._max_samples = n_samples
+        self._class_0 = (
+            [class_0] if isinstance(class_0, int) else (list(class_0) if class_0 else None)
+        )
+        self._class_1 = (
+            [class_1] if isinstance(class_1, int) else (list(class_1) if class_1 else None)
+        )
+        self._seed = seed
+        self._X: Optional[np.ndarray] = None
+        self._y: Optional[np.ndarray] = None
+        self._is_binary = self._class_0 is not None and self._class_1 is not None
+
+    @property
+    def name(self) -> str:
+        if self._is_binary:
+            c0 = ",".join(map(str, self._class_0))
+            c1 = ",".join(map(str, self._class_1))
+            return f"mnist_full_{c0}_vs_{c1}"
+        return "mnist_full"
+
+    @property
+    def n_samples(self) -> int:
+        if self._X is None:
+            self._load_data()
+        return len(self._X)
+
+    def _load_data(self):
+        """Load MNIST data from fetch_openml."""
+        from sklearn.datasets import fetch_openml
+
+        # Fetch full MNIST (70k samples, 784 features)
+        # This will cache locally after first download (~50MB)
+        mnist = fetch_openml("mnist_784", version=1, as_frame=False, parser="auto")
+        X_all = mnist.data.astype(np.float64)  # (70000, 784)
+        y_all = mnist.target.astype(np.int64)  # (70000,)
+
+        # Apply binary filtering if specified
+        if self._is_binary:
+            mask_0 = np.isin(y_all, self._class_0)
+            mask_1 = np.isin(y_all, self._class_1)
+            mask = mask_0 | mask_1
+
+            X = X_all[mask]
+            y = np.where(mask_0[mask], 0, 1)
+        else:
+            X = X_all
+            y = y_all
+
+        # Shuffle
+        rng = np.random.default_rng(self._seed)
+        indices = rng.permutation(len(X))
+        X = X[indices]
+        y = y[indices]
+
+        # Limit samples
+        if self._max_samples is not None:
+            X = X[: self._max_samples]
+            y = y[: self._max_samples]
+
+        self._X = X
+        self._y = y
+
+    def load(self) -> Tuple[np.ndarray, Optional[np.ndarray]]:
+        """Load the raw MNIST dataset.
+
+        Returns:
+            Tuple of (X, y) where X has shape (n_samples, 784) and
+            y has shape (n_samples,) with digit labels (0-9 or binary).
+        """
+        if self._X is None:
+            self._load_data()
+        return self._X.copy(), self._y.copy()
+
+    def prepare_for_qubits(
+        self, n_qubits: int, normalize: bool = True
+    ) -> Tuple[np.ndarray, Optional[np.ndarray]]:
+        """Prepare MNIST data for quantum encoding.
+
+        For n_qubits < 10 (< 1024 features), downsamples using interpolation.
+        For n_qubits >= 10, zero-pads to match dimension.
+
+        Args:
+            n_qubits: Number of qubits (features will be 2^n_qubits).
+            normalize: Whether to L2-normalize each sample.
+
+        Returns:
+            Tuple of (X, y) where X has shape (n_samples, 2^n_qubits).
+        """
+        X, y = self.load()
+        target_dim = 1 << n_qubits
+
+        # Original MNIST is 28x28 = 784 features
+        if target_dim == 784:
+            pass  # No resize needed (unlikely, not power of 2)
+        elif target_dim < 784:
+            # Downsample using interpolation
+            X = self._downsample_images(X, target_dim)
+        else:
+            # Zero-pad
+            X = self._resize_features(X, target_dim, method="pad")
+
+        if normalize:
+            X = self._normalize(X)
+
+        return X, y
+
+    def _downsample_images(self, X: np.ndarray, target_dim: int) -> np.ndarray:
+        """Downsample 28x28 images to smaller resolution.
+
+        Args:
+            X: Image data of shape (n_samples, 784).
+            target_dim: Target dimension (power of 2).
+
+        Returns:
+            Downsampled images of shape (n_samples, target_dim).
+        """
+        n_samples = len(X)
+
+        # Calculate target grid size
+        target_size = int(np.sqrt(target_dim))
+        if target_size * target_size != target_dim:
+            # Not a perfect square, truncate features
+            return X[:, :target_dim]
+
+        # Reshape to 28x28 and use scipy zoom for interpolation
+        from scipy.ndimage import zoom
+
+        images = X.reshape(n_samples, 28, 28)
+        zoom_factor = target_size / 28.0
+
+        # Apply zoom to each image
+        result = np.zeros((n_samples, target_size, target_size), dtype=X.dtype)
+        for i in range(n_samples):
+            result[i] = zoom(images[i], zoom_factor, order=1)
+
+        return result.reshape(n_samples, target_dim)
+
+
+# Register the datasets
 register_dataset("mnist", MNISTBinaryDataset)
 register_dataset("mnist_binary", MNISTBinaryDataset)
+register_dataset("mnist_full", FullMNISTDataset)
+register_dataset("full_mnist", FullMNISTDataset)
