@@ -49,7 +49,7 @@ import time
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 import numpy as np
 
@@ -156,9 +156,13 @@ def generate_data(n_samples: int, n_qubits: int, seed: int = 42) -> np.ndarray:
 
 
 def benchmark_mahout(
-    data: np.ndarray, n_qubits: int, batch_size: int = 64, warmup: int = 1, runs: int = 3,
-    device_id: int = 0
-) -> BenchmarkResult:
+    data: np.ndarray,
+    n_qubits: int,
+    batch_size: int = 64,
+    warmup: int = 1,
+    runs: int = 3,
+    device_id: int = 0,
+) -> Optional[BenchmarkResult]:
     """Benchmark Mahout QDP throughput."""
     if not HAS_MAHOUT:
         return None
@@ -194,7 +198,7 @@ def benchmark_mahout(
         # Encode all data
         qtensor = engine.encode(temp_path, n_qubits)
         if HAS_TORCH:
-            gpu_tensor = torch.from_dlpack(qtensor)
+            _ = torch.from_dlpack(qtensor)  # Force DLPack transfer
             torch.cuda.synchronize(0)
 
         elapsed = time.perf_counter() - start
@@ -218,8 +222,12 @@ def benchmark_mahout(
 
 
 def benchmark_pennylane(
-    data: np.ndarray, n_qubits: int, batch_size: int = 64, warmup: int = 1, runs: int = 3
-) -> BenchmarkResult:
+    data: np.ndarray,
+    n_qubits: int,
+    batch_size: int = 64,
+    warmup: int = 1,
+    runs: int = 3,
+) -> Optional[BenchmarkResult]:
     """Benchmark PennyLane throughput."""
     if not HAS_PENNYLANE:
         return None
@@ -262,8 +270,12 @@ def benchmark_pennylane(
 
 
 def benchmark_qiskit(
-    data: np.ndarray, n_qubits: int, batch_size: int = 64, warmup: int = 1, runs: int = 3
-) -> BenchmarkResult:
+    data: np.ndarray,
+    n_qubits: int,
+    batch_size: int = 64,
+    warmup: int = 1,
+    runs: int = 3,
+) -> Optional[BenchmarkResult]:
     """Benchmark Qiskit throughput (warning: very slow!)."""
     if not HAS_QISKIT:
         return None
@@ -325,7 +337,9 @@ def run_scaling_benchmark(
             # Create dataset without sample limit to check max available
             dataset_obj = get_dataset(dataset_name)
             dataset_max_samples = dataset_obj.n_samples
-            print(f"\nDataset '{dataset_name}' loaded: {dataset_max_samples} samples available")
+            print(
+                f"\nDataset '{dataset_name}' loaded: {dataset_max_samples} samples available"
+            )
         except Exception as e:
             print(f"Warning: Could not load dataset '{dataset_name}': {e}")
             print("Falling back to synthetic data")
@@ -347,12 +361,16 @@ def run_scaling_benchmark(
 
         # Check sample limit for real datasets
         if dataset_max_samples is not None and actual_samples > dataset_max_samples:
-            print(f"\nWarning: Requested {actual_samples} samples but dataset has {dataset_max_samples}")
+            print(
+                f"\nWarning: Requested {actual_samples} samples but dataset has {dataset_max_samples}"
+            )
             print(f"Using {dataset_max_samples} samples instead")
             actual_samples = dataset_max_samples
 
-        print(f"\n{'='*60}")
-        print(f"Benchmarking: {x_axis}={x_val}, qubits={actual_qubits}, samples={actual_samples}")
+        print(f"\n{'=' * 60}")
+        print(
+            f"Benchmarking: {x_axis}={x_val}, qubits={actual_qubits}, samples={actual_samples}"
+        )
         print("=" * 60)
 
         # Generate data for this configuration
@@ -367,18 +385,14 @@ def run_scaling_benchmark(
             print(f"\n  Running {fw}...")
 
             if fw.lower() == "mahout":
-                result = benchmark_mahout(
-                    data, actual_qubits, warmup=warmup, runs=runs
-                )
+                result = benchmark_mahout(data, actual_qubits, warmup=warmup, runs=runs)
             elif fw.lower() == "pennylane":
                 result = benchmark_pennylane(
                     data, actual_qubits, warmup=warmup, runs=runs
                 )
             elif fw.lower() == "qiskit":
                 print("    (Qiskit is slow, please wait...)")
-                result = benchmark_qiskit(
-                    data, actual_qubits, warmup=warmup, runs=runs
-                )
+                result = benchmark_qiskit(data, actual_qubits, warmup=warmup, runs=runs)
             else:
                 print(f"  Unknown framework: {fw}")
                 continue
@@ -404,20 +418,28 @@ def save_results_csv(
     with open(output_path, "w", newline="") as f:
         writer = csv.writer(f)
         # Header
-        writer.writerow([
-            "framework", "x_value", "throughput_samples_per_sec",
-            "latency_ms_per_sample", "n_qubits", "n_samples"
-        ])
+        writer.writerow(
+            [
+                "framework",
+                "x_value",
+                "throughput_samples_per_sec",
+                "latency_ms_per_sample",
+                "n_qubits",
+                "n_samples",
+            ]
+        )
         # Data
         for r in results:
-            writer.writerow([
-                r.framework,
-                r.x_value,
-                f"{r.throughput:.2f}",
-                f"{r.latency_ms:.4f}",
-                r.config.get("n_qubits", ""),
-                r.config.get("n_samples", ""),
-            ])
+            writer.writerow(
+                [
+                    r.framework,
+                    r.x_value,
+                    f"{r.throughput:.2f}",
+                    f"{r.latency_ms:.4f}",
+                    r.config.get("n_qubits", ""),
+                    r.config.get("n_samples", ""),
+                ]
+            )
 
     print(f"CSV saved to: {output_path}")
 
@@ -440,7 +462,7 @@ def plot_results(
         return
 
     # Group results by framework
-    frameworks = {}
+    frameworks: Dict[str, Dict[str, List[float]]] = {}
     for r in results:
         if r.framework not in frameworks:
             frameworks[r.framework] = {"x": [], "y": []}
@@ -489,7 +511,9 @@ def plot_results(
     if title:
         ax.set_title(title, fontsize=14, fontweight="bold")
     else:
-        ax.set_title(f"Framework Comparison: {y_labels.get(y_axis, y_axis)}", fontsize=14)
+        ax.set_title(
+            f"Framework Comparison: {y_labels.get(y_axis, y_axis)}", fontsize=14
+        )
 
     # Scale
     if log_x:
@@ -647,11 +671,17 @@ def main():
     print(f"Dataset:    {args.dataset}")
     print(f"X-axis:     {args.x_axis} = {x_values}")
     print(f"Y-axis:     {args.y_axis}")
-    print(f"Qubits:     {n_qubits}" if args.x_axis != "qubits" else f"Qubits:     {args.qubits}")
+    print(
+        f"Qubits:     {n_qubits}"
+        if args.x_axis != "qubits"
+        else f"Qubits:     {args.qubits}"
+    )
     print(f"Frameworks: {args.frameworks}")
     print(f"GPU:        {args.gpu}")
     print(f"Warmup:     {args.warmup}, Runs: {args.runs}")
-    print(f"Output:     {output_dir}" if not args.no_save else "Output:     (interactive)")
+    print(
+        f"Output:     {output_dir}" if not args.no_save else "Output:     (interactive)"
+    )
     print("=" * 60)
 
     # Check framework availability
@@ -666,7 +696,7 @@ def main():
 
     # Check dataset availability
     if args.dataset.lower() != "synthetic" and not HAS_DATASETS:
-        print(f"Warning: Dataset module not available, falling back to synthetic")
+        print("Warning: Dataset module not available, falling back to synthetic")
 
     # Run benchmarks (GPU already selected via CUDA_VISIBLE_DEVICES)
     results = run_scaling_benchmark(
@@ -684,10 +714,14 @@ def main():
     print("\n" + "=" * 60)
     print("RESULTS SUMMARY")
     print("=" * 60)
-    print(f"{'Framework':<12} {'X-Value':<10} {'Throughput (s/s)':<18} {'Latency (ms)':<12}")
+    print(
+        f"{'Framework':<12} {'X-Value':<10} {'Throughput (s/s)':<18} {'Latency (ms)':<12}"
+    )
     print("-" * 60)
     for r in results:
-        print(f"{r.framework:<12} {r.x_value:<10} {r.throughput:<18.2f} {r.latency_ms:<12.4f}")
+        print(
+            f"{r.framework:<12} {r.x_value:<10} {r.throughput:<18.2f} {r.latency_ms:<12.4f}"
+        )
 
     # Generate outputs
     if results:

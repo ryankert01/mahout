@@ -4,13 +4,17 @@ build-backend = "maturin"
 
 [project]
 name = "qumat-qdp"
-requires-python = ">=3.10,<3.13"
+requires-python = ">=3.11,<3.13"
 classifiers = [
     "Programming Language :: Rust",
     "Programming Language :: Python :: Implementation :: CPython",
     "Programming Language :: Python :: Implementation :: PyPy",
 ]
 dynamic = ["version"]
+dependencies = [
+    "pennylane>=0.44.0",
+    "pennylane-lightning-gpu>=0.42.0",
+]
 
 [dependency-groups]
 dev = [

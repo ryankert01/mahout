@@ -416,7 +416,12 @@ Presets:
         elif benchmark == "e2e":
             # E2E uses single qubit count (use max from list)
             cmd = build_e2e_command(
-                preset, frameworks, max(args.qubits), args.samples, output_path, args.plot
+                preset,
+                frameworks,
+                max(args.qubits),
+                args.samples,
+                output_path,
+                args.plot,
             )
         else:
             print(f"Unknown benchmark: {benchmark}")

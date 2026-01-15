@@ -1,3 +1,19 @@
+#
+# Licensed to the Apache Software Foundation (ASF) under one or more
+# contributor license agreements.  See the NOTICE file distributed with
+# this work for additional information regarding copyright ownership.
+# The ASF licenses this file to You under the Apache License, Version 2.0
+# (the "License"); you may not use this file except in compliance with
+# the License.  You may obtain a copy of the License at
+#
+#    http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 # Licensed to the Apache Software Foundation (ASF) under one or more
 # contributor license agreements.  See the NOTICE file distributed with
 # this work for additional information regarding copyright ownership.
@@ -65,6 +81,7 @@ class MNISTBinaryDataset(BenchmarkDataset):
     def n_samples(self) -> int:
         if self._X is None:
             self._load_data()
+        assert self._X is not None  # Populated by _load_data()
         return len(self._X)
 
     def _load_data(self):
@@ -107,6 +124,7 @@ class MNISTBinaryDataset(BenchmarkDataset):
         """
         if self._X is None:
             self._load_data()
+        assert self._X is not None and self._y is not None  # Populated by _load_data()
         return self._X.copy(), self._y.copy()
 
     def prepare_for_qubits(
@@ -207,10 +225,14 @@ class FullMNISTDataset(BenchmarkDataset):
     ):
         self._max_samples = n_samples
         self._class_0 = (
-            [class_0] if isinstance(class_0, int) else (list(class_0) if class_0 else None)
+            [class_0]
+            if isinstance(class_0, int)
+            else (list(class_0) if class_0 else None)
         )
         self._class_1 = (
-            [class_1] if isinstance(class_1, int) else (list(class_1) if class_1 else None)
+            [class_1]
+            if isinstance(class_1, int)
+            else (list(class_1) if class_1 else None)
         )
         self._seed = seed
         self._X: Optional[np.ndarray] = None
@@ -219,7 +241,7 @@ class FullMNISTDataset(BenchmarkDataset):
 
     @property
     def name(self) -> str:
-        if self._is_binary:
+        if self._is_binary and self._class_0 is not None and self._class_1 is not None:
             c0 = ",".join(map(str, self._class_0))
             c1 = ",".join(map(str, self._class_1))
             return f"mnist_full_{c0}_vs_{c1}"
@@ -229,6 +251,7 @@ class FullMNISTDataset(BenchmarkDataset):
     def n_samples(self) -> int:
         if self._X is None:
             self._load_data()
+        assert self._X is not None  # Populated by _load_data()
         return len(self._X)
 
     def _load_data(self):
@@ -276,6 +299,7 @@ class FullMNISTDataset(BenchmarkDataset):
         """
         if self._X is None:
             self._load_data()
+        assert self._X is not None and self._y is not None  # Populated by _load_data()
         return self._X.copy(), self._y.copy()
 
     def prepare_for_qubits(

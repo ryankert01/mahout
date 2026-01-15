@@ -1,3 +1,19 @@
+#
+# Licensed to the Apache Software Foundation (ASF) under one or more
+# contributor license agreements.  See the NOTICE file distributed with
+# this work for additional information regarding copyright ownership.
+# The ASF licenses this file to You under the Apache License, Version 2.0
+# (the "License"); you may not use this file except in compliance with
+# the License.  You may obtain a copy of the License at
+#
+#    http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 # Licensed to the Apache Software Foundation (ASF) under one or more
 # contributor license agreements.  See the NOTICE file distributed with
 # this work for additional information regarding copyright ownership.
@@ -251,7 +267,9 @@ def plot_scaling(
 
         x_vals = [r.get(x_param, 0) for r in group_results]
         y_vals = [r.get(y_metric, 0) for r in group_results]
-        y_errs = [r.get(error_metric, 0) for r in group_results] if error_metric else None
+        y_errs = (
+            [r.get(error_metric, 0) for r in group_results] if error_metric else None
+        )
 
         color = FRAMEWORK_COLORS.get(group_name, None)
         label = FRAMEWORK_LABELS.get(group_name, group_name)
@@ -316,7 +334,9 @@ def plot_speedup(
             break
 
     if baseline_val is None or baseline_val == 0:
-        raise ValueError(f"Baseline framework '{baseline_framework}' not found or has zero value")
+        raise ValueError(
+            f"Baseline framework '{baseline_framework}' not found or has zero value"
+        )
 
     # Compute speedups
     frameworks = []
@@ -362,7 +382,9 @@ def plot_speedup(
 
     ax.set_xticks(x)
     ax.set_xticklabels(labels, rotation=15, ha="right")
-    ax.set_ylabel(f"Speedup vs {FRAMEWORK_LABELS.get(baseline_framework, baseline_framework)}")
+    ax.set_ylabel(
+        f"Speedup vs {FRAMEWORK_LABELS.get(baseline_framework, baseline_framework)}"
+    )
     if title:
         ax.set_title(title)
 
