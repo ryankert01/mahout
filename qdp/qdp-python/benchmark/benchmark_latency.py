@@ -21,19 +21,102 @@ Data-to-State latency benchmark: CPU RAM -> GPU VRAM.
 Run:
     python qdp/qdp-python/benchmark/benchmark_latency.py --qubits 16 \
         --batches 200 --batch-size 64 --prefetch 16
+
+With statistical analysis (multiple runs):
+    python qdp/qdp-python/benchmark/benchmark_latency.py --qubits 16 \
+        --batches 50 --warmup 2 --runs 5
 """
 
 from __future__ import annotations
 
 import argparse
-import queue
-import threading
 import time
+from dataclasses import dataclass
+from typing import Callable, Optional
 
 import numpy as np
 import torch
 
 from _qdp import QdpEngine
+
+# Import from benchmark.core if available, otherwise use local fallbacks
+try:
+    from benchmark.core import (
+        BenchmarkRun,
+        BenchmarkStats,
+        ResultsStore,
+        build_sample,
+        clear_gpu_caches,
+        normalize_batch,
+        prefetched_batches,
+        sync_cuda,
+    )
+
+    USE_CORE = True
+except ImportError:
+    import queue
+    import threading
+    from typing import Generator, Optional
+
+    USE_CORE = False
+
+    def sync_cuda(device_id: Optional[int] = None) -> None:
+        if torch.cuda.is_available():
+            torch.cuda.synchronize(device_id)
+
+    def clear_gpu_caches(gc_collect: bool = True) -> None:
+        import gc
+
+        if gc_collect:
+            gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            torch.cuda.synchronize()
+
+    def build_sample(seed: int, vector_len: int) -> np.ndarray:
+        mask = np.uint64(vector_len - 1)
+        scale = 1.0 / vector_len
+        idx = np.arange(vector_len, dtype=np.uint64)
+        mixed = (idx + np.uint64(seed)) & mask
+        return mixed.astype(np.float64) * scale
+
+    def prefetched_batches(
+        total_batches: int,
+        batch_size: int,
+        vector_len: int,
+        prefetch: int = 16,
+        seed_offset: int = 0,
+        normalize: bool = False,
+    ) -> Generator[np.ndarray, None, None]:
+        q: queue.Queue[np.ndarray | None] = queue.Queue(maxsize=prefetch)
+
+        def producer():
+            for batch_idx in range(total_batches):
+                base = batch_idx * batch_size + seed_offset
+                batch = [build_sample(base + i, vector_len) for i in range(batch_size)]
+                arr = np.stack(batch)
+                if normalize:
+                    arr = normalize_batch(arr)
+                q.put(arr)
+            q.put(None)
+
+        threading.Thread(target=producer, daemon=True).start()
+
+        while True:
+            batch = q.get()
+            if batch is None:
+                break
+            yield batch
+
+    def normalize_batch(batch: np.ndarray, epsilon: float = 0.0) -> np.ndarray:
+        norms = np.linalg.norm(batch, axis=1, keepdims=True)
+        norms = (
+            np.maximum(norms, epsilon)
+            if epsilon > 0
+            else np.where(norms == 0, 1.0, norms)
+        )
+        return batch / norms
+
 
 BAR = "=" * 70
 SEP = "-" * 70
@@ -62,44 +145,15 @@ except ImportError:
     HAS_QISKIT = False
 
 
-def sync_cuda() -> None:
-    if torch.cuda.is_available():
-        torch.cuda.synchronize()
+@dataclass
+class BenchmarkResult:
+    """Result from a single benchmark run."""
 
-
-def build_sample(seed: int, vector_len: int) -> np.ndarray:
-    mask = np.uint64(vector_len - 1)
-    scale = 1.0 / vector_len
-    idx = np.arange(vector_len, dtype=np.uint64)
-    mixed = (idx + np.uint64(seed)) & mask
-    return mixed.astype(np.float64) * scale
-
-
-def prefetched_batches(
-    total_batches: int, batch_size: int, vector_len: int, prefetch: int
-):
-    q: queue.Queue[np.ndarray | None] = queue.Queue(maxsize=prefetch)
-
-    def producer():
-        for batch_idx in range(total_batches):
-            base = batch_idx * batch_size
-            batch = [build_sample(base + i, vector_len) for i in range(batch_size)]
-            q.put(np.stack(batch))
-        q.put(None)
-
-    threading.Thread(target=producer, daemon=True).start()
-
-    while True:
-        batch = q.get()
-        if batch is None:
-            break
-        yield batch
-
-
-def normalize_batch(batch: np.ndarray) -> np.ndarray:
-    norms = np.linalg.norm(batch, axis=1, keepdims=True)
-    norms[norms == 0] = 1.0
-    return batch / norms
+    framework: str
+    duration_s: float
+    latency_ms: float
+    vectors_processed: int
+    stats: Optional[object] = None  # BenchmarkStats when using statistical mode
 
 
 def parse_frameworks(raw: str) -> list[str]:
@@ -242,6 +296,43 @@ def run_qiskit_statevector(
     return duration, latency_ms
 
 
+def run_with_stats(
+    fn: Callable, warmup_runs: int, measurement_runs: int, **kwargs
+) -> tuple[float, float, Optional[object]]:
+    """Run a benchmark function with statistical analysis.
+
+    Returns:
+        Tuple of (mean_duration, mean_latency_ms, BenchmarkStats or None)
+    """
+    if not USE_CORE or measurement_runs <= 1:
+        # Single run mode (legacy behavior)
+        duration, latency = fn(**kwargs)
+        return duration, latency, None
+
+    # Statistical mode: run multiple times and collect stats
+    latencies = []
+    durations = []
+
+    # Warmup runs
+    for i in range(warmup_runs):
+        print(f"    Warmup run {i + 1}/{warmup_runs}...", end="\r")
+        clear_gpu_caches()
+        fn(**kwargs)
+    print(" " * 40, end="\r")  # Clear line
+
+    # Measurement runs
+    for i in range(measurement_runs):
+        print(f"    Measurement run {i + 1}/{measurement_runs}...", end="\r")
+        clear_gpu_caches()
+        duration, latency = fn(**kwargs)
+        durations.append(duration)
+        latencies.append(latency)
+    print(" " * 40, end="\r")  # Clear line
+
+    stats = BenchmarkStats.from_samples(latencies)
+    return np.mean(durations), stats.mean, stats
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Benchmark Data-to-State latency across frameworks."
@@ -266,6 +357,30 @@ def main():
             "(pennylane,qiskit-init,qiskit-statevector,mahout) or 'all'."
         ),
     )
+    parser.add_argument(
+        "--warmup",
+        type=int,
+        default=0,
+        help="Number of warmup runs before measurement (enables statistical mode).",
+    )
+    parser.add_argument(
+        "--runs",
+        type=int,
+        default=1,
+        help="Number of measurement runs for statistics (default: 1 = legacy mode).",
+    )
+    parser.add_argument(
+        "--output",
+        type=str,
+        default=None,
+        help="Directory to save results (JSON). Enables result persistence.",
+    )
+    parser.add_argument(
+        "--plot",
+        type=str,
+        default=None,
+        help="Path to save comparison plot (PNG/PDF). Requires matplotlib.",
+    )
     args = parser.parse_args()
 
     if not torch.cuda.is_available():
@@ -278,6 +393,7 @@ def main():
 
     total_vectors = args.batches * args.batch_size
     vector_len = 1 << args.qubits
+    stats_mode = args.runs > 1
 
     print(f"Generating {total_vectors} samples of {args.qubits} qubits...")
     print(f"  Batch size   : {args.batch_size}")
@@ -285,6 +401,13 @@ def main():
     print(f"  Batches      : {args.batches}")
     print(f"  Prefetch     : {args.prefetch}")
     print(f"  Frameworks   : {', '.join(frameworks)}")
+    if stats_mode:
+        print(f"  Warmup runs  : {args.warmup}")
+        print(f"  Measure runs : {args.runs}")
+        if USE_CORE:
+            print("  Mode         : Statistical (benchmark.core enabled)")
+        else:
+            print("  Mode         : Statistical (benchmark.core NOT available)")
     bytes_per_vec = vector_len * 8
     print(f"  Generated {total_vectors} samples")
     print(
@@ -294,73 +417,160 @@ def main():
     print()
 
     print(BAR)
-    print(
-        f"DATA-TO-STATE LATENCY BENCHMARK: {args.qubits} Qubits, {total_vectors} Samples"
-    )
+    title = f"DATA-TO-STATE LATENCY BENCHMARK: {args.qubits} Qubits, {total_vectors} Samples"
+    if stats_mode:
+        title += f" ({args.runs} runs)"
+    print(title)
     print(BAR)
 
-    t_pl = l_pl = 0.0
-    t_q_init = l_q_init = 0.0
-    t_q_sv = l_q_sv = 0.0
-    t_mahout = l_mahout = 0.0
+    # Store results with stats
+    results: dict[str, BenchmarkResult] = {}
+    bench_kwargs = {
+        "num_qubits": args.qubits,
+        "total_batches": args.batches,
+        "batch_size": args.batch_size,
+        "prefetch": args.prefetch,
+    }
 
     if "pennylane" in frameworks:
         print()
         print("[PennyLane] Full Pipeline (DataLoader -> GPU)...")
-        t_pl, l_pl = run_pennylane(
-            args.qubits, args.batches, args.batch_size, args.prefetch
+        t, lat, s = run_with_stats(
+            run_pennylane, args.warmup, args.runs, **bench_kwargs
         )
+        results["pennylane"] = BenchmarkResult("pennylane", t, lat, total_vectors, s)
 
     if "qiskit-init" in frameworks:
         print()
         print("[Qiskit Initialize] Full Pipeline (DataLoader -> GPU)...")
-        t_q_init, l_q_init = run_qiskit_init(
-            args.qubits, args.batches, args.batch_size, args.prefetch
+        t, lat, s = run_with_stats(
+            run_qiskit_init, args.warmup, args.runs, **bench_kwargs
+        )
+        results["qiskit-init"] = BenchmarkResult(
+            "qiskit-init", t, lat, total_vectors, s
         )
 
     if "qiskit-statevector" in frameworks:
         print()
         print("[Qiskit Statevector] Full Pipeline (DataLoader -> GPU)...")
-        t_q_sv, l_q_sv = run_qiskit_statevector(
-            args.qubits, args.batches, args.batch_size, args.prefetch
+        t, lat, s = run_with_stats(
+            run_qiskit_statevector, args.warmup, args.runs, **bench_kwargs
+        )
+        results["qiskit-statevector"] = BenchmarkResult(
+            "qiskit-statevector", t, lat, total_vectors, s
         )
 
     if "mahout" in frameworks:
         print()
         print("[Mahout] Full Pipeline (DataLoader -> GPU)...")
-        t_mahout, l_mahout = run_mahout(
-            args.qubits, args.batches, args.batch_size, args.prefetch
-        )
+        t, lat, s = run_with_stats(run_mahout, args.warmup, args.runs, **bench_kwargs)
+        results["mahout"] = BenchmarkResult("mahout", t, lat, total_vectors, s)
 
     print()
     print(BAR)
     print("LATENCY (Lower is Better)")
     print(f"Samples: {total_vectors}, Qubits: {args.qubits}")
+    if stats_mode and USE_CORE:
+        print(f"Statistics: {args.runs} runs with {args.warmup} warmup")
     print(BAR)
 
+    # Collect and sort results
     latency_results = []
-    if l_pl > 0:
-        latency_results.append((FRAMEWORK_LABELS["pennylane"], l_pl))
-    if l_q_init > 0:
-        latency_results.append((FRAMEWORK_LABELS["qiskit-init"], l_q_init))
-    if l_q_sv > 0:
-        latency_results.append((FRAMEWORK_LABELS["qiskit-statevector"], l_q_sv))
-    if l_mahout > 0:
-        latency_results.append((FRAMEWORK_LABELS["mahout"], l_mahout))
+    for key, res in results.items():
+        if res.latency_ms > 0:
+            latency_results.append((FRAMEWORK_LABELS[key], res.latency_ms, res.stats))
 
     latency_results.sort(key=lambda x: x[1])
 
-    for name, latency in latency_results:
-        print(f"{name:18s} {latency:10.3f} ms/vector")
+    # Display results
+    if stats_mode and USE_CORE:
+        # Statistical output with mean +/- std
+        for name, latency, stats in latency_results:
+            if stats:
+                print(
+                    f"{name:18s} {stats.mean:8.3f} +/- {stats.std:5.3f} ms/vector  "
+                    f"(p95={stats.p95:.3f})"
+                )
+            else:
+                print(f"{name:18s} {latency:8.3f} ms/vector")
+    else:
+        # Legacy single-value output
+        for name, latency, _ in latency_results:
+            print(f"{name:18s} {latency:10.3f} ms/vector")
+
+    # Speedup calculations
+    l_mahout = results.get("mahout", BenchmarkResult("", 0, 0, 0)).latency_ms
+    l_pl = results.get("pennylane", BenchmarkResult("", 0, 0, 0)).latency_ms
+    l_q_init = results.get("qiskit-init", BenchmarkResult("", 0, 0, 0)).latency_ms
+    l_q_sv = results.get("qiskit-statevector", BenchmarkResult("", 0, 0, 0)).latency_ms
 
     if l_mahout > 0:
         print(SEP)
         if l_pl > 0:
-            print(f"Speedup vs PennyLane:      {l_pl / l_mahout:10.2f}x")
+            print(f"Speedup vs PennyLane:       {l_pl / l_mahout:10.2f}x")
         if l_q_init > 0:
             print(f"Speedup vs Qiskit Init:     {l_q_init / l_mahout:10.2f}x")
         if l_q_sv > 0:
             print(f"Speedup vs Qiskit Statevec: {l_q_sv / l_mahout:10.2f}x")
+
+    # Save results if output directory specified
+    if args.output and USE_CORE:
+        print()
+        print(SEP)
+        print("SAVING RESULTS")
+        print(SEP)
+        store = ResultsStore(args.output)
+        config = {
+            "qubits": args.qubits,
+            "batches": args.batches,
+            "batch_size": args.batch_size,
+            "prefetch": args.prefetch,
+            "warmup_runs": args.warmup,
+            "measurement_runs": args.runs,
+        }
+        for key, res in results.items():
+            if res.latency_ms > 0:
+                run = BenchmarkRun.create(
+                    benchmark_name="latency",
+                    framework=key,
+                    config=config,
+                    stats=res.stats if res.stats else None,
+                    latency_ms=res.latency_ms,
+                )
+                path = store.save(run)
+                print(f"  Saved: {path}")
+
+    # Generate plot if requested
+    if args.plot and USE_CORE:
+        try:
+            from benchmark.visualization import plot_framework_comparison
+
+            print()
+            print(SEP)
+            print("GENERATING PLOT")
+            print(SEP)
+
+            # Prepare data for plotting
+            plot_data = []
+            for key, res in results.items():
+                if res.latency_ms > 0:
+                    entry = {"framework": key, "mean": res.latency_ms}
+                    if res.stats:
+                        entry["std"] = res.stats.std
+                    plot_data.append(entry)
+
+            if plot_data:
+                fig = plot_framework_comparison(
+                    plot_data,
+                    title=f"Data-to-State Latency ({args.qubits} qubits)",
+                    ylabel="Latency (ms/vector)",
+                )
+                fig.savefig(args.plot, dpi=300, bbox_inches="tight")
+                print(f"  Saved: {args.plot}")
+            else:
+                print("  No data to plot")
+        except ImportError:
+            print("  Warning: matplotlib not available, skipping plot")
 
 
 if __name__ == "__main__":

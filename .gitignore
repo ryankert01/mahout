@@ -46,3 +46,7 @@ __pycache__/
 
 # Testing and type checking (project uses these)
 .pytest_cache/
+
+# Benchmark outputs (generated files)
+qdp/qdp-python/benchmark/results/
+qdp/qdp-python/benchmark/*.png

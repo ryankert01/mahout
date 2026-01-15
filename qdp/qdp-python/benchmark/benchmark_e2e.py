@@ -28,18 +28,28 @@ Scope:
 This is the most realistic comparison for a "Cold Start" Training Epoch.
 """
 
-import time
 import argparse
+import gc
+import itertools
+import os
+import time
+from pathlib import Path
+
+import numpy as np
+import pyarrow as pa
+import pyarrow.ipc as ipc
+import pyarrow.parquet as pq
 import torch
 import torch.nn as nn
-import numpy as np
-import os
-import itertools
-import gc
-import pyarrow as pa
-import pyarrow.parquet as pq
-import pyarrow.ipc as ipc
 from _qdp import QdpEngine
+
+# Import benchmark infrastructure (optional, with fallback)
+try:
+    from benchmark.core import BenchmarkRun, BenchmarkStats, ResultsStore
+
+    HAS_BENCHMARK_CORE = True
+except ImportError:
+    HAS_BENCHMARK_CORE = False
 
 # Competitors
 try:
@@ -391,6 +401,145 @@ def verify_correctness(states_dict):
         compare_states(name_a, valid_states[name_a], name_b, valid_states[name_b])
 
 
+def run_benchmark_with_stats(
+    run_fn, name, engine, n_qubits, n_samples, warmup_runs, measurement_runs
+):
+    """Run a benchmark function multiple times and collect statistics."""
+    all_times = []
+
+    for run_idx in range(warmup_runs + measurement_runs):
+        is_warmup = run_idx < warmup_runs
+        run_type = "warmup" if is_warmup else "measure"
+        print(f"  [{run_type}] Run {run_idx + 1}/{warmup_runs + measurement_runs}...")
+
+        if engine is not None:
+            elapsed, states = run_fn(engine, n_qubits, n_samples)
+        else:
+            elapsed, states = run_fn(n_qubits, n_samples)
+
+        if not is_warmup:
+            all_times.append(elapsed)
+
+    # Calculate statistics
+    if HAS_BENCHMARK_CORE and all_times:
+        stats = BenchmarkStats.from_samples(all_times, remove_outliers=False)
+        return stats, states
+    elif all_times:
+        # Fallback: return simple dict
+        import statistics
+
+        return {
+            "mean": statistics.mean(all_times),
+            "std": statistics.stdev(all_times) if len(all_times) > 1 else 0.0,
+            "min": min(all_times),
+            "max": max(all_times),
+            "n_samples": len(all_times),
+        }, states
+    return None, states
+
+
+def save_results(results_data, output_dir, args):
+    """Save benchmark results to output directory."""
+    if not HAS_BENCHMARK_CORE:
+        print("Warning: benchmark.core not available, skipping result persistence")
+        return
+
+    store = ResultsStore(output_dir)
+
+    for framework, stats_obj in results_data.items():
+        if stats_obj is None:
+            continue
+
+        # Convert BenchmarkStats to dict if needed
+        if hasattr(stats_obj, "to_dict"):
+            stats_dict = stats_obj.to_dict()
+        else:
+            stats_dict = stats_obj
+
+        run = BenchmarkRun.create(
+            benchmark_name="e2e",
+            framework=framework,
+            config={
+                "qubits": args.qubits,
+                "samples": args.samples,
+            },
+            stats=stats_obj if hasattr(stats_obj, "to_dict") else None,
+            latency_ms=stats_dict.get("mean", 0) * 1000,  # Convert to ms
+            metadata={"warmup_runs": args.warmup, "measurement_runs": args.runs},
+        )
+        store.save(run)
+
+    print(f"\nResults saved to: {output_dir}")
+
+
+def generate_plots(results_data, output_dir, args):
+    """Generate comparison plots."""
+    try:
+        from benchmark.visualization.plots import (
+            plot_framework_comparison,
+            plot_speedup,
+        )
+    except ImportError:
+        print("Warning: benchmark.visualization not available, skipping plots")
+        return
+
+    # Prepare data for plotting
+    plot_data = []
+    for framework, stats_obj in results_data.items():
+        if stats_obj is None:
+            continue
+        if hasattr(stats_obj, "mean"):
+            plot_data.append(
+                {"framework": framework, "mean": stats_obj.mean, "std": stats_obj.std}
+            )
+        elif isinstance(stats_obj, dict):
+            plot_data.append(
+                {
+                    "framework": framework,
+                    "mean": stats_obj.get("mean", 0),
+                    "std": stats_obj.get("std", 0),
+                }
+            )
+
+    if not plot_data:
+        print("Warning: No data to plot")
+        return
+
+    output_path = Path(output_dir)
+    output_path.mkdir(parents=True, exist_ok=True)
+
+    # Framework comparison bar chart
+    fig = plot_framework_comparison(
+        plot_data,
+        title=f"E2E Latency: {args.qubits}q, {args.samples} samples",
+        ylabel="Total Time (s)",
+    )
+    comparison_path = output_path / "e2e_comparison.png"
+    fig.savefig(comparison_path, dpi=150, bbox_inches="tight")
+    print(f"Saved comparison plot: {comparison_path}")
+
+    # Speedup chart (vs PennyLane if available)
+    pennylane_data = [d for d in plot_data if "pennylane" in d["framework"].lower()]
+    if pennylane_data:
+        try:
+            # Normalize framework names for speedup plot
+            speedup_data = []
+            for d in plot_data:
+                name = d["framework"].lower().replace("-", "_")
+                speedup_data.append({**d, "framework": name})
+            # Find the pennylane name in normalized form
+            pl_name = [
+                d["framework"] for d in speedup_data if "pennylane" in d["framework"]
+            ]
+            if pl_name:
+                fig = plot_speedup(speedup_data, baseline_framework=pl_name[0])
+                speedup_path = output_path / "e2e_speedup.png"
+                fig.savefig(speedup_path, dpi=150, bbox_inches="tight")
+                print(f"Saved speedup plot: {speedup_path}")
+        except Exception as e:
+            print(f"Warning: Could not generate speedup plot: {e}")
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         description="Final End-to-End Benchmark (Disk -> GPU VRAM)"
@@ -408,11 +557,39 @@ if __name__ == "__main__":
         choices=["mahout-parquet", "mahout-arrow", "pennylane", "qiskit", "all"],
         help="Frameworks to benchmark. Use 'all' to run all available frameworks.",
     )
+    # Statistical mode options
+    parser.add_argument(
+        "--warmup",
+        type=int,
+        default=0,
+        help="Number of warmup runs (default: 0 for single-shot mode)",
+    )
+    parser.add_argument(
+        "--runs",
+        type=int,
+        default=1,
+        help="Number of measurement runs (default: 1 for single-shot mode)",
+    )
+    # Output options
+    parser.add_argument(
+        "--output",
+        type=str,
+        default=None,
+        help="Output directory for results (enables result persistence)",
+    )
+    parser.add_argument(
+        "--plot",
+        action="store_true",
+        help="Generate comparison plots (requires --output)",
+    )
     args = parser.parse_args()
 
     # Expand "all" option
     if "all" in args.frameworks:
         args.frameworks = ["mahout-parquet", "mahout-arrow", "pennylane", "qiskit"]
+
+    # Check if statistical mode is enabled
+    use_stats_mode = args.warmup > 0 or args.runs > 1
 
     generate_data(args.qubits, args.samples)
 
@@ -427,68 +604,145 @@ if __name__ == "__main__":
 
     print("\n" + "=" * 70)
     print(f"E2E BENCHMARK: {args.qubits} Qubits, {args.samples} Samples")
+    if use_stats_mode:
+        print(f"Statistical Mode: {args.warmup} warmup + {args.runs} measurement runs")
     print("=" * 70)
 
-    # Initialize results
-    t_pl, pl_all_states = 0.0, None
-    t_mahout_parquet, mahout_parquet_all_states = 0.0, None
-    t_mahout_arrow, mahout_arrow_all_states = 0.0, None
-    t_qiskit, qiskit_all_states = 0.0, None
+    # Initialize results - use stats objects when in statistical mode
+    stats_results = {}  # For statistical mode
+    pl_all_states = None
+    mahout_parquet_all_states = None
+    mahout_arrow_all_states = None
+    qiskit_all_states = None
 
     # Run benchmarks
     if "pennylane" in args.frameworks:
-        t_pl, pl_all_states = run_pennylane(args.qubits, args.samples)
-        # Clean cache between framework benchmarks
+        if use_stats_mode:
+            stats, pl_all_states = run_benchmark_with_stats(
+                run_pennylane,
+                "PennyLane",
+                None,
+                args.qubits,
+                args.samples,
+                args.warmup,
+                args.runs,
+            )
+            stats_results["pennylane"] = stats
+        else:
+            t_pl, pl_all_states = run_pennylane(args.qubits, args.samples)
+            stats_results["pennylane"] = {"mean": t_pl, "std": 0.0}
         clean_cache()
 
     if "qiskit" in args.frameworks:
-        t_qiskit, qiskit_all_states = run_qiskit(args.qubits, args.samples)
-        # Clean cache between framework benchmarks
+        if use_stats_mode:
+            stats, qiskit_all_states = run_benchmark_with_stats(
+                run_qiskit,
+                "Qiskit",
+                None,
+                args.qubits,
+                args.samples,
+                args.warmup,
+                args.runs,
+            )
+            stats_results["qiskit"] = stats
+        else:
+            t_qiskit, qiskit_all_states = run_qiskit(args.qubits, args.samples)
+            stats_results["qiskit"] = {"mean": t_qiskit, "std": 0.0}
         clean_cache()
 
     if "mahout-parquet" in args.frameworks:
-        t_mahout_parquet, mahout_parquet_all_states = run_mahout_parquet(
-            engine, args.qubits, args.samples
-        )
-        # Clean cache between framework benchmarks
+        if use_stats_mode:
+            stats, mahout_parquet_all_states = run_benchmark_with_stats(
+                run_mahout_parquet,
+                "Mahout-Parquet",
+                engine,
+                args.qubits,
+                args.samples,
+                args.warmup,
+                args.runs,
+            )
+            stats_results["mahout-parquet"] = stats
+        else:
+            t_mahout_parquet, mahout_parquet_all_states = run_mahout_parquet(
+                engine, args.qubits, args.samples
+            )
+            stats_results["mahout-parquet"] = {"mean": t_mahout_parquet, "std": 0.0}
         clean_cache()
 
     if "mahout-arrow" in args.frameworks:
-        t_mahout_arrow, mahout_arrow_all_states = run_mahout_arrow(
-            engine, args.qubits, args.samples
-        )
-        # Clean cache between framework benchmarks
+        if use_stats_mode:
+            stats, mahout_arrow_all_states = run_benchmark_with_stats(
+                run_mahout_arrow,
+                "Mahout-Arrow",
+                engine,
+                args.qubits,
+                args.samples,
+                args.warmup,
+                args.runs,
+            )
+            stats_results["mahout-arrow"] = stats
+        else:
+            t_mahout_arrow, mahout_arrow_all_states = run_mahout_arrow(
+                engine, args.qubits, args.samples
+            )
+            stats_results["mahout-arrow"] = {"mean": t_mahout_arrow, "std": 0.0}
         clean_cache()
 
+    # Print results
     print("\n" + "=" * 70)
     print("E2E LATENCY (Lower is Better)")
     print(f"Samples: {args.samples}, Qubits: {args.qubits}")
     print("=" * 70)
 
+    # Collect results for sorting
     results = []
-    if t_mahout_parquet > 0:
-        results.append(("Mahout-Parquet", t_mahout_parquet))
-    if t_mahout_arrow > 0:
-        results.append(("Mahout-Arrow", t_mahout_arrow))
-    if t_pl > 0:
-        results.append(("PennyLane", t_pl))
-    if t_qiskit > 0:
-        results.append(("Qiskit", t_qiskit))
+    for name, stats_obj in stats_results.items():
+        if stats_obj is None:
+            continue
+        if hasattr(stats_obj, "mean"):
+            mean_val = stats_obj.mean
+            std_val = stats_obj.std
+        else:
+            mean_val = stats_obj.get("mean", 0)
+            std_val = stats_obj.get("std", 0)
+        if mean_val > 0:
+            results.append((name, mean_val, std_val))
 
     results.sort(key=lambda x: x[1])
 
-    for name, time_val in results:
-        print(f"{name:16s} {time_val:10.4f} s")
+    # Print results with statistics
+    if use_stats_mode:
+        for name, mean_val, std_val in results:
+            print(f"{name:16s} {mean_val:10.4f} +/- {std_val:.4f} s")
+    else:
+        for name, mean_val, _ in results:
+            print(f"{name:16s} {mean_val:10.4f} s")
 
     print("-" * 70)
-    # Use fastest Mahout variant for speedup comparison
-    mahout_times = [t for t in [t_mahout_arrow, t_mahout_parquet] if t > 0]
-    t_mahout_best = min(mahout_times) if mahout_times else 0
+
+    # Calculate speedup vs competitors
+    mahout_results = [r for r in results if "mahout" in r[0].lower()]
+    t_mahout_best = min(r[1] for r in mahout_results) if mahout_results else 0
+
     if t_mahout_best > 0:
-        if t_pl > 0:
-            print(f"Speedup vs PennyLane: {t_pl / t_mahout_best:10.2f}x")
-        if t_qiskit > 0:
-            print(f"Speedup vs Qiskit:    {t_qiskit / t_mahout_best:10.2f}x")
+        pl_result = next((r for r in results if "pennylane" in r[0].lower()), None)
+        qiskit_result = next((r for r in results if "qiskit" in r[0].lower()), None)
+
+        if pl_result:
+            print(f"Speedup vs PennyLane: {pl_result[1] / t_mahout_best:10.2f}x")
+        if qiskit_result:
+            print(f"Speedup vs Qiskit:    {qiskit_result[1] / t_mahout_best:10.2f}x")
+
+    # Save results if output specified
+    if args.output:
+        save_results(stats_results, args.output, args)
+
+    # Generate plots if requested
+    if args.plot:
+        if args.output:
+            generate_plots(stats_results, args.output, args)
+        else:
+            print("Warning: --plot requires --output to be specified")
 
     # Run Verification after benchmarks
     verify_correctness(

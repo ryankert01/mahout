@@ -25,21 +25,110 @@ The workload mirrors the `qdp-core/examples/dataloader_throughput.rs` pipeline:
 
 Run:
     python qdp/benchmark/benchmark_throughput.py --qubits 16 --batches 200 --batch-size 64
+
+With statistical analysis:
+    python qdp/benchmark/benchmark_throughput.py --qubits 16 --batches 50 --warmup 2 --runs 5
 """
 
+from __future__ import annotations
+
 import argparse
-import queue
-import threading
 import time
+from dataclasses import dataclass
+from typing import Callable, Optional
 
 import numpy as np
 import torch
 
 from _qdp import QdpEngine
 
+# Import from benchmark.core if available, otherwise use local fallbacks
+try:
+    from benchmark.core import (
+        BenchmarkRun,
+        BenchmarkStats,
+        ResultsStore,
+        build_sample,
+        clear_gpu_caches,
+        normalize_batch,
+        prefetched_batches,
+        sync_cuda,
+    )
+
+    USE_CORE = True
+except ImportError:
+    import queue
+    import threading
+    from typing import Generator, Optional
+
+    USE_CORE = False
+
+    def sync_cuda(device_id: Optional[int] = None) -> None:
+        if torch.cuda.is_available():
+            torch.cuda.synchronize(device_id)
+
+    def clear_gpu_caches(gc_collect: bool = True) -> None:
+        import gc
+
+        if gc_collect:
+            gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            torch.cuda.synchronize()
+
+    def build_sample(seed: int, vector_len: int) -> np.ndarray:
+        mask = np.uint64(vector_len - 1)
+        scale = 1.0 / vector_len
+        idx = np.arange(vector_len, dtype=np.uint64)
+        mixed = (idx + np.uint64(seed)) & mask
+        return mixed.astype(np.float64) * scale
+
+    def prefetched_batches(
+        total_batches: int,
+        batch_size: int,
+        vector_len: int,
+        prefetch: int = 16,
+        seed_offset: int = 0,
+        normalize: bool = False,
+    ) -> Generator[np.ndarray, None, None]:
+        q: queue.Queue[np.ndarray | None] = queue.Queue(maxsize=prefetch)
+
+        def producer():
+            for batch_idx in range(total_batches):
+                base = batch_idx * batch_size + seed_offset
+                batch = [build_sample(base + i, vector_len) for i in range(batch_size)]
+                arr = np.stack(batch)
+                if normalize:
+                    arr = normalize_batch(arr)
+                q.put(arr)
+            q.put(None)
+
+        threading.Thread(target=producer, daemon=True).start()
+
+        while True:
+            batch = q.get()
+            if batch is None:
+                break
+            yield batch
+
+    def normalize_batch(batch: np.ndarray, epsilon: float = 0.0) -> np.ndarray:
+        norms = np.linalg.norm(batch, axis=1, keepdims=True)
+        norms = (
+            np.maximum(norms, epsilon)
+            if epsilon > 0
+            else np.where(norms == 0, 1.0, norms)
+        )
+        return batch / norms
+
+
 BAR = "=" * 70
 SEP = "-" * 70
 FRAMEWORK_CHOICES = ("pennylane", "qiskit", "mahout")
+FRAMEWORK_LABELS = {
+    "mahout": "Mahout",
+    "pennylane": "PennyLane",
+    "qiskit": "Qiskit",
+}
 
 try:
     import pennylane as qml
@@ -57,39 +146,15 @@ except ImportError:
     HAS_QISKIT = False
 
 
-def build_sample(seed: int, vector_len: int) -> np.ndarray:
-    mask = np.uint64(vector_len - 1)
-    scale = 1.0 / vector_len
-    idx = np.arange(vector_len, dtype=np.uint64)
-    mixed = (idx + np.uint64(seed)) & mask
-    return mixed.astype(np.float64) * scale
+@dataclass
+class BenchmarkResult:
+    """Result from a single benchmark run."""
 
-
-def prefetched_batches(
-    total_batches: int, batch_size: int, vector_len: int, prefetch: int
-):
-    q: queue.Queue[np.ndarray | None] = queue.Queue(maxsize=prefetch)
-
-    def producer():
-        for batch_idx in range(total_batches):
-            base = batch_idx * batch_size
-            batch = [build_sample(base + i, vector_len) for i in range(batch_size)]
-            q.put(np.stack(batch))
-        q.put(None)
-
-    threading.Thread(target=producer, daemon=True).start()
-
-    while True:
-        batch = q.get()
-        if batch is None:
-            break
-        yield batch
-
-
-def normalize_batch(batch: np.ndarray) -> np.ndarray:
-    norms = np.linalg.norm(batch, axis=1, keepdims=True)
-    norms[norms == 0] = 1.0
-    return batch / norms
+    framework: str
+    duration_s: float
+    throughput: float
+    vectors_processed: int
+    stats: Optional[object] = None  # BenchmarkStats when using statistical mode
 
 
 def parse_frameworks(raw: str) -> list[str]:
@@ -119,7 +184,7 @@ def run_mahout(num_qubits: int, total_batches: int, batch_size: int, prefetch: i
         print(f"[Mahout] Init failed: {exc}")
         return 0.0, 0.0
 
-    torch.cuda.synchronize()
+    sync_cuda()
     start = time.perf_counter()
 
     processed = 0
@@ -132,10 +197,9 @@ def run_mahout(num_qubits: int, total_batches: int, batch_size: int, prefetch: i
         _ = tensor.sum()
         processed += normalized.shape[0]
 
-    torch.cuda.synchronize()
+    sync_cuda()
     duration = time.perf_counter() - start
     throughput = processed / duration if duration > 0 else 0.0
-    print(f"  IO + Encode Time: {duration:.4f} s")
     print(f"  Total Time: {duration:.4f} s ({throughput:.1f} vectors/sec)")
     return duration, throughput
 
@@ -154,7 +218,7 @@ def run_pennylane(num_qubits: int, total_batches: int, batch_size: int, prefetch
         )
         return qml.state()
 
-    torch.cuda.synchronize()
+    sync_cuda()
     start = time.perf_counter()
     processed = 0
 
@@ -170,7 +234,7 @@ def run_pennylane(num_qubits: int, total_batches: int, batch_size: int, prefetch
         _ = state_gpu.abs().sum()
         processed += len(batch_cpu)
 
-    torch.cuda.synchronize()
+    sync_cuda()
     duration = time.perf_counter() - start
     throughput = processed / duration if duration > 0 else 0.0
     print(f"  Total Time: {duration:.4f} s ({throughput:.1f} vectors/sec)")
@@ -183,7 +247,7 @@ def run_qiskit(num_qubits: int, total_batches: int, batch_size: int, prefetch: i
         return 0.0, 0.0
 
     backend = AerSimulator(method="statevector")
-    torch.cuda.synchronize()
+    sync_cuda()
     start = time.perf_counter()
     processed = 0
 
@@ -207,11 +271,48 @@ def run_qiskit(num_qubits: int, total_batches: int, batch_size: int, prefetch: i
         )
         _ = gpu_tensor.abs().sum()
 
-    torch.cuda.synchronize()
+    sync_cuda()
     duration = time.perf_counter() - start
     throughput = processed / duration if duration > 0 else 0.0
     print(f"\n  Total Time: {duration:.4f} s ({throughput:.1f} vectors/sec)")
     return duration, throughput
+
+
+def run_with_stats(
+    fn: Callable, warmup_runs: int, measurement_runs: int, **kwargs
+) -> tuple[float, float, Optional[object]]:
+    """Run a benchmark function with statistical analysis.
+
+    Returns:
+        Tuple of (mean_duration, mean_throughput, BenchmarkStats or None)
+    """
+    if not USE_CORE or measurement_runs <= 1:
+        # Single run mode (legacy behavior)
+        duration, throughput = fn(**kwargs)
+        return duration, throughput, None
+
+    # Statistical mode: run multiple times and collect stats
+    throughputs = []
+    durations = []
+
+    # Warmup runs
+    for i in range(warmup_runs):
+        print(f"    Warmup run {i + 1}/{warmup_runs}...", end="\r")
+        clear_gpu_caches()
+        fn(**kwargs)
+    print(" " * 40, end="\r")  # Clear line
+
+    # Measurement runs
+    for i in range(measurement_runs):
+        print(f"    Measurement run {i + 1}/{measurement_runs}...", end="\r")
+        clear_gpu_caches()
+        duration, throughput = fn(**kwargs)
+        durations.append(duration)
+        throughputs.append(throughput)
+    print(" " * 40, end="\r")  # Clear line
+
+    stats = BenchmarkStats.from_samples(throughputs)
+    return np.mean(durations), stats.mean, stats
 
 
 def main():
@@ -240,6 +341,30 @@ def main():
             "(pennylane,qiskit,mahout) or 'all'."
         ),
     )
+    parser.add_argument(
+        "--warmup",
+        type=int,
+        default=0,
+        help="Number of warmup runs before measurement (enables statistical mode).",
+    )
+    parser.add_argument(
+        "--runs",
+        type=int,
+        default=1,
+        help="Number of measurement runs for statistics (default: 1 = legacy mode).",
+    )
+    parser.add_argument(
+        "--output",
+        type=str,
+        default=None,
+        help="Directory to save results (JSON). Enables result persistence.",
+    )
+    parser.add_argument(
+        "--plot",
+        type=str,
+        default=None,
+        help="Path to save comparison plot (PNG/PDF). Requires matplotlib.",
+    )
     args = parser.parse_args()
 
     try:
@@ -249,6 +374,7 @@ def main():
 
     total_vectors = args.batches * args.batch_size
     vector_len = 1 << args.qubits
+    stats_mode = args.runs > 1
 
     print(f"Generating {total_vectors} samples of {args.qubits} qubits...")
     print(f"  Batch size   : {args.batch_size}")
@@ -256,6 +382,13 @@ def main():
     print(f"  Batches      : {args.batches}")
     print(f"  Prefetch     : {args.prefetch}")
     print(f"  Frameworks   : {', '.join(frameworks)}")
+    if stats_mode:
+        print(f"  Warmup runs  : {args.warmup}")
+        print(f"  Measure runs : {args.runs}")
+        if USE_CORE:
+            print("  Mode         : Statistical (benchmark.core enabled)")
+        else:
+            print("  Mode         : Statistical (benchmark.core NOT available)")
     bytes_per_vec = vector_len * 8
     print(f"  Generated {total_vectors} samples")
     print(
@@ -265,59 +398,141 @@ def main():
     print()
 
     print(BAR)
-    print(
-        f"DATALOADER THROUGHPUT BENCHMARK: {args.qubits} Qubits, {total_vectors} Samples"
-    )
+    title = f"DATALOADER THROUGHPUT BENCHMARK: {args.qubits} Qubits, {total_vectors} Samples"
+    if stats_mode:
+        title += f" ({args.runs} runs)"
+    print(title)
     print(BAR)
 
-    t_pl = th_pl = t_qiskit = th_qiskit = t_mahout = th_mahout = 0.0
+    # Store results with stats
+    results: dict[str, BenchmarkResult] = {}
+    bench_kwargs = {
+        "num_qubits": args.qubits,
+        "total_batches": args.batches,
+        "batch_size": args.batch_size,
+        "prefetch": args.prefetch,
+    }
 
     if "pennylane" in frameworks:
         print()
         print("[PennyLane] Full Pipeline (DataLoader -> GPU)...")
-        t_pl, th_pl = run_pennylane(
-            args.qubits, args.batches, args.batch_size, args.prefetch
-        )
+        t, th, s = run_with_stats(run_pennylane, args.warmup, args.runs, **bench_kwargs)
+        results["pennylane"] = BenchmarkResult("pennylane", t, th, total_vectors, s)
 
     if "qiskit" in frameworks:
         print()
         print("[Qiskit] Full Pipeline (DataLoader -> GPU)...")
-        t_qiskit, th_qiskit = run_qiskit(
-            args.qubits, args.batches, args.batch_size, args.prefetch
-        )
+        t, th, s = run_with_stats(run_qiskit, args.warmup, args.runs, **bench_kwargs)
+        results["qiskit"] = BenchmarkResult("qiskit", t, th, total_vectors, s)
 
     if "mahout" in frameworks:
         print()
         print("[Mahout] Full Pipeline (DataLoader -> GPU)...")
-        t_mahout, th_mahout = run_mahout(
-            args.qubits, args.batches, args.batch_size, args.prefetch
-        )
+        t, th, s = run_with_stats(run_mahout, args.warmup, args.runs, **bench_kwargs)
+        results["mahout"] = BenchmarkResult("mahout", t, th, total_vectors, s)
 
     print()
     print(BAR)
     print("THROUGHPUT (Higher is Better)")
     print(f"Samples: {total_vectors}, Qubits: {args.qubits}")
+    if stats_mode and USE_CORE:
+        print(f"Statistics: {args.runs} runs with {args.warmup} warmup")
     print(BAR)
 
+    # Collect and sort results (higher throughput is better)
     throughput_results = []
-    if th_pl > 0:
-        throughput_results.append(("PennyLane", th_pl))
-    if th_qiskit > 0:
-        throughput_results.append(("Qiskit", th_qiskit))
-    if th_mahout > 0:
-        throughput_results.append(("Mahout", th_mahout))
+    for key, res in results.items():
+        if res.throughput > 0:
+            throughput_results.append(
+                (FRAMEWORK_LABELS[key], res.throughput, res.stats)
+            )
 
     throughput_results.sort(key=lambda x: x[1], reverse=True)
 
-    for name, tput in throughput_results:
-        print(f"{name:12s} {tput:10.1f} vectors/sec")
+    # Display results
+    if stats_mode and USE_CORE:
+        # Statistical output with mean +/- std
+        for name, throughput, stats in throughput_results:
+            if stats:
+                print(f"{name:12s} {stats.mean:10.1f} +/- {stats.std:6.1f} vectors/sec")
+            else:
+                print(f"{name:12s} {throughput:10.1f} vectors/sec")
+    else:
+        # Legacy single-value output
+        for name, throughput, _ in throughput_results:
+            print(f"{name:12s} {throughput:10.1f} vectors/sec")
 
-    if t_mahout > 0:
+    # Speedup calculations
+    th_mahout = results.get("mahout", BenchmarkResult("", 0, 0, 0)).throughput
+    th_pl = results.get("pennylane", BenchmarkResult("", 0, 0, 0)).throughput
+    th_qiskit = results.get("qiskit", BenchmarkResult("", 0, 0, 0)).throughput
+
+    if th_mahout > 0:
         print(SEP)
-        if t_pl > 0:
+        if th_pl > 0:
             print(f"Speedup vs PennyLane: {th_mahout / th_pl:10.2f}x")
-        if t_qiskit > 0:
+        if th_qiskit > 0:
             print(f"Speedup vs Qiskit:    {th_mahout / th_qiskit:10.2f}x")
+
+    # Save results if output directory specified
+    if args.output and USE_CORE:
+        print()
+        print(SEP)
+        print("SAVING RESULTS")
+        print(SEP)
+        store = ResultsStore(args.output)
+        config = {
+            "qubits": args.qubits,
+            "batches": args.batches,
+            "batch_size": args.batch_size,
+            "prefetch": args.prefetch,
+            "warmup_runs": args.warmup,
+            "measurement_runs": args.runs,
+        }
+        for key, res in results.items():
+            if res.throughput > 0:
+                run = BenchmarkRun.create(
+                    benchmark_name="throughput",
+                    framework=key,
+                    config=config,
+                    stats=res.stats if res.stats else None,
+                    throughput=res.throughput,
+                )
+                path = store.save(run)
+                print(f"  Saved: {path}")
+
+    # Generate plot if requested
+    if args.plot and USE_CORE:
+        try:
+            from benchmark.visualization import plot_framework_comparison
+
+            print()
+            print(SEP)
+            print("GENERATING PLOT")
+            print(SEP)
+
+            # Prepare data for plotting
+            plot_data = []
+            for key, res in results.items():
+                if res.throughput > 0:
+                    entry = {"framework": key, "mean": res.throughput}
+                    if res.stats:
+                        entry["std"] = res.stats.std
+                    plot_data.append(entry)
+
+            if plot_data:
+                fig = plot_framework_comparison(
+                    plot_data,
+                    title=f"DataLoader Throughput ({args.qubits} qubits)",
+                    ylabel="Throughput (vectors/sec)",
+                    sort_by_value=False,  # Higher is better, keep original order
+                )
+                fig.savefig(args.plot, dpi=300, bbox_inches="tight")
+                print(f"  Saved: {args.plot}")
+            else:
+                print("  No data to plot")
+        except ImportError:
+            print("  Warning: matplotlib not available, skipping plot")
 
 
 if __name__ == "__main__":
