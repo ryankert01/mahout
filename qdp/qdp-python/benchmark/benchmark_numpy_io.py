@@ -213,10 +213,10 @@ def run_framework_statistical(
     throughput_stats = compute_statistics(throughputs)
     
     print(f"\n  Duration Statistics (ms):")
-    print(format_statistics(duration_stats, indent="    "))
+    print(format_statistics(duration_stats))
     
     print(f"\n  Throughput Statistics (samples/sec):")
-    print(format_statistics(throughput_stats, indent="    "))
+    print(format_statistics(throughput_stats))
     
     # Return mean values for compatibility with standard mode
     mean_duration = duration_stats['mean'] / 1000  # Convert back to seconds
