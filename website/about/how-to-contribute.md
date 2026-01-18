@@ -90,19 +90,19 @@ Describe your proposed changes and check that they fit in with what others are d
  1. Create a GitHub Issue (if one does not already exist or you haven't already)
  2. Fork the repository and clone it to your local machine
  3. Ensure that you are working with the latest code from the [apache/mahout](https://github.com/apache/mahout) master branch
- 3. Modify the source code and add some (very) nice features
+ 4. Modify the source code and add some (very) nice features
      - Be sure to adhere to the following points:
          - All public classes and methods should have informative docstrings
          - Code should be formatted according to standard Python conventions (PEP 8)
          - Run `pre-commit run --all-files` to check code style
          - Contributions should pass existing unit tests
          - New unit tests should be provided to demonstrate bugs and fixes
- 4. Commit the changes to your local repository
- 4. Push the code back up to your GitHub fork
- 5. Create a [Pull Request](https://help.github.com/articles/creating-a-pull-request) to the apache/mahout repository on GitHub
+ 5. Commit the changes to your local repository
+ 6. Push the code back up to your GitHub fork
+ 7. Create a [Pull Request](https://help.github.com/articles/creating-a-pull-request) to the apache/mahout repository on GitHub
      - Include the corresponding GitHub Issue number and description in the title of the pull request:
         - ie. #123: < Issue-Description >
- 6. Committers and other members of the Mahout community can then comment on the Pull Request.  Be sure to watch for comments, respond and make any necessary changes
+ 8. Committers and other members of the Mahout community can then comment on the Pull Request.  Be sure to watch for comments, respond and make any necessary changes
 
 Please be patient. Committers are busy people too. If no one responds to your Pull Request after a few days, please make friendly reminders on the mailing list. Please
 incorporate other's suggestions into your changes if you think they're reasonable. Finally, remember that even changes that are not committed are useful to the community.
