@@ -24,12 +24,13 @@ use arrow::datatypes::DataType;
 use arrow::ipc::reader::FileReader as ArrowFileReader;
 
 use crate::error::{MahoutError, Result};
-use crate::reader::DataReader;
+use crate::reader::{DataReader, NullHandling, handle_float64_nulls};
 
 /// Reader for Arrow IPC files containing FixedSizeList<Float64> or List<Float64> columns.
 pub struct ArrowIPCReader {
     path: std::path::PathBuf,
     read: bool,
+    null_handling: NullHandling,
 }
 
 impl ArrowIPCReader {
@@ -64,7 +65,14 @@ impl ArrowIPCReader {
         Ok(Self {
             path: path.to_path_buf(),
             read: false,
+            null_handling: NullHandling::default(),
         })
+    }
+
+    /// Set the null handling strategy for this reader.
+    pub fn with_null_handling(mut self, null_handling: NullHandling) -> Self {
+        self.null_handling = null_handling;
+        self
     }
 }
 
@@ -136,11 +144,7 @@ impl DataReader for ArrowIPCReader {
                         .downcast_ref::<Float64Array>()
                         .ok_or_else(|| MahoutError::Io("Values must be Float64".to_string()))?;
 
-                    if float_array.null_count() == 0 {
-                        all_data.extend_from_slice(float_array.values());
-                    } else {
-                        all_data.extend(float_array.iter().map(|opt| opt.unwrap_or(0.0)));
-                    }
+                    handle_float64_nulls(&mut all_data, float_array, self.null_handling)?;
 
                     num_samples += list_array.len();
                 }
@@ -182,11 +186,7 @@ impl DataReader for ArrowIPCReader {
                             all_data.reserve(new_capacity);
                         }
 
-                        if float_array.null_count() == 0 {
-                            all_data.extend_from_slice(float_array.values());
-                        } else {
-                            all_data.extend(float_array.iter().map(|opt| opt.unwrap_or(0.0)));
-                        }
+                        handle_float64_nulls(&mut all_data, float_array, self.null_handling)?;
 
                         num_samples += 1;
                     }

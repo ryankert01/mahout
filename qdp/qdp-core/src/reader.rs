@@ -45,7 +45,58 @@
 //! }
 //! ```
 
-use crate::error::Result;
+use arrow::array::{Array, Float64Array};
+
+use crate::error::{MahoutError, Result};
+
+/// Strategy for handling null values encountered in data readers.
+///
+/// Controls what happens when a reader encounters a null (missing) value in
+/// the input data. This enum unifies the null handling behavior between batch
+/// and streaming modes (see [MAHOUT-765]).
+///
+/// # Default
+/// The default is [`FillZero`](NullHandling::FillZero), which replaces null
+/// values with `0.0` to maintain backward compatibility.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NullHandling {
+    /// Replace null values with `0.0`.
+    FillZero,
+    /// Return an error when any null value is encountered.
+    Reject,
+}
+
+impl Default for NullHandling {
+    fn default() -> Self {
+        NullHandling::FillZero
+    }
+}
+
+/// Extend `output` with data from `float_array`, applying the given [`NullHandling`] strategy
+/// when null values are present.
+///
+/// When the array contains no nulls, this is a fast `extend_from_slice` path.
+pub fn handle_float64_nulls(
+    output: &mut Vec<f64>,
+    float_array: &Float64Array,
+    null_handling: NullHandling,
+) -> Result<()> {
+    if float_array.null_count() == 0 {
+        output.extend_from_slice(float_array.values());
+    } else {
+        match null_handling {
+            NullHandling::FillZero => {
+                output.extend(float_array.iter().map(|opt| opt.unwrap_or(0.0)));
+            }
+            NullHandling::Reject => {
+                return Err(MahoutError::InvalidInput(
+                    "Null value encountered in Float64Array. Use NullHandling::FillZero to replace nulls with 0.0, or clean the data at the source.".to_string(),
+                ));
+            }
+        }
+    }
+    Ok(())
+}
 
 /// Generic data reader interface for batch quantum data.
 ///

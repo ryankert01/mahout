@@ -24,13 +24,14 @@ use arrow::datatypes::DataType;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 
 use crate::error::{MahoutError, Result};
-use crate::reader::{DataReader, StreamingDataReader};
+use crate::reader::{DataReader, NullHandling, StreamingDataReader, handle_float64_nulls};
 
 /// Reader for Parquet files containing List<Float64> or FixedSizeList<Float64> columns.
 pub struct ParquetReader {
     reader: Option<parquet::arrow::arrow_reader::ParquetRecordBatchReader>,
     sample_size: Option<usize>,
     total_rows: usize,
+    null_handling: NullHandling,
 }
 
 impl ParquetReader {
@@ -118,7 +119,14 @@ impl ParquetReader {
             reader: Some(reader),
             sample_size: None,
             total_rows,
+            null_handling: NullHandling::default(),
         })
+    }
+
+    /// Set the null handling strategy for this reader.
+    pub fn with_null_handling(mut self, null_handling: NullHandling) -> Self {
+        self.null_handling = null_handling;
+        self
     }
 }
 
@@ -173,11 +181,7 @@ impl DataReader for ParquetReader {
                             all_data.reserve(current_size * self.total_rows);
                         }
 
-                        if float_array.null_count() == 0 {
-                            all_data.extend_from_slice(float_array.values());
-                        } else {
-                            all_data.extend(float_array.iter().map(|opt| opt.unwrap_or(0.0)));
-                        }
+                        handle_float64_nulls(&mut all_data, float_array, self.null_handling)?;
 
                         num_samples += 1;
                     }
@@ -203,11 +207,7 @@ impl DataReader for ParquetReader {
                         .downcast_ref::<Float64Array>()
                         .ok_or_else(|| MahoutError::Io("Values must be Float64".to_string()))?;
 
-                    if float_array.null_count() == 0 {
-                        all_data.extend_from_slice(float_array.values());
-                    } else {
-                        all_data.extend(float_array.iter().map(|opt| opt.unwrap_or(0.0)));
-                    }
+                    handle_float64_nulls(&mut all_data, float_array, self.null_handling)?;
 
                     num_samples += list_array.len();
                 }
@@ -247,6 +247,7 @@ pub struct ParquetStreamingReader {
     leftover_data: Vec<f64>,
     leftover_cursor: usize,
     pub total_rows: usize,
+    null_handling: NullHandling,
 }
 
 impl ParquetStreamingReader {
@@ -338,7 +339,14 @@ impl ParquetStreamingReader {
             leftover_data: Vec::new(),
             leftover_cursor: 0,
             total_rows,
+            null_handling: NullHandling::default(),
         })
+    }
+
+    /// Set the null handling strategy for this reader.
+    pub fn with_null_handling(mut self, null_handling: NullHandling) -> Self {
+        self.null_handling = null_handling;
+        self
     }
 
     /// Get the sample size (number of elements per sample).
@@ -449,11 +457,7 @@ impl StreamingDataReader for ParquetStreamingReader {
                                     current_sample_size = Some(float_array.len());
                                 }
 
-                                if float_array.null_count() == 0 {
-                                    batch_values.extend_from_slice(float_array.values());
-                                } else {
-                                    return Err(MahoutError::Io("Null value encountered in Float64Array during quantum encoding. Please check data quality at the source.".to_string()));
-                                }
+                                handle_float64_nulls(&mut batch_values, float_array, self.null_handling)?;
                             }
 
                             (
@@ -489,11 +493,7 @@ impl StreamingDataReader for ParquetStreamingReader {
                                 })?;
 
                             let mut batch_values = Vec::new();
-                            if float_array.null_count() == 0 {
-                                batch_values.extend_from_slice(float_array.values());
-                            } else {
-                                return Err(MahoutError::Io("Null value encountered in Float64Array during quantum encoding. Please check data quality at the source.".to_string()));
-                            }
+                            handle_float64_nulls(&mut batch_values, float_array, self.null_handling)?;
 
                             (current_sample_size, batch_values)
                         }
@@ -515,11 +515,7 @@ impl StreamingDataReader for ParquetStreamingReader {
                             let current_sample_size = 1;
 
                             let mut batch_values = Vec::new();
-                            if float_array.null_count() == 0 {
-                                batch_values.extend_from_slice(float_array.values());
-                            } else {
-                                return Err(MahoutError::Io("Null value encountered in Float64Array during quantum encoding. Please check data quality at the source.".to_string()));
-                            }
+                            handle_float64_nulls(&mut batch_values, float_array, self.null_handling)?;
 
                             (current_sample_size, batch_values)
                         }

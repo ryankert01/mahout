@@ -33,30 +33,50 @@ use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use parquet::file::properties::WriterProperties;
 
 use crate::error::{MahoutError, Result};
+use crate::reader::NullHandling;
 
 /// Converts an Arrow Float64Array to Vec<f64>.
+///
+/// Null values are replaced with `0.0` (equivalent to [`NullHandling::FillZero`]).
+/// For configurable null handling, use [`arrow_to_vec_with_null_handling`].
 pub fn arrow_to_vec(array: &Float64Array) -> Vec<f64> {
-    if array.null_count() == 0 {
-        array.values().to_vec()
-    } else {
-        array.iter().map(|opt| opt.unwrap_or(0.0)).collect()
-    }
+    arrow_to_vec_with_null_handling(array, NullHandling::FillZero)
+        .expect("FillZero never fails")
+}
+
+/// Converts an Arrow Float64Array to Vec<f64> with a configurable null handling strategy.
+pub fn arrow_to_vec_with_null_handling(
+    array: &Float64Array,
+    null_handling: NullHandling,
+) -> Result<Vec<f64>> {
+    let mut result = Vec::with_capacity(array.len());
+    crate::reader::handle_float64_nulls(&mut result, array, null_handling)?;
+    Ok(result)
 }
 
 /// Flattens multiple Arrow Float64Arrays into a single Vec<f64>.
+///
+/// Null values are replaced with `0.0` (equivalent to [`NullHandling::FillZero`]).
+/// For configurable null handling, use [`arrow_to_vec_chunked_with_null_handling`].
 pub fn arrow_to_vec_chunked(arrays: &[Float64Array]) -> Vec<f64> {
+    arrow_to_vec_chunked_with_null_handling(arrays, NullHandling::FillZero)
+        .expect("FillZero never fails")
+}
+
+/// Flattens multiple Arrow Float64Arrays into a single Vec<f64> with a configurable
+/// null handling strategy.
+pub fn arrow_to_vec_chunked_with_null_handling(
+    arrays: &[Float64Array],
+    null_handling: NullHandling,
+) -> Result<Vec<f64>> {
     let total_len: usize = arrays.iter().map(|a| a.len()).sum();
     let mut result = Vec::with_capacity(total_len);
 
     for array in arrays {
-        if array.null_count() == 0 {
-            result.extend_from_slice(array.values());
-        } else {
-            result.extend(array.iter().map(|opt| opt.unwrap_or(0.0)));
-        }
+        crate::reader::handle_float64_nulls(&mut result, array, null_handling)?;
     }
 
-    result
+    Ok(result)
 }
 
 /// Reads Float64 data from a Parquet file.

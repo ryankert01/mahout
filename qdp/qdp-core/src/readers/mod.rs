@@ -37,3 +37,6 @@ pub use numpy::NumpyReader;
 pub use parquet::{ParquetReader, ParquetStreamingReader};
 pub use tensorflow::TensorFlowReader;
 pub use torch::TorchReader;
+
+// Re-export NullHandling for convenience
+pub use crate::reader::NullHandling;
