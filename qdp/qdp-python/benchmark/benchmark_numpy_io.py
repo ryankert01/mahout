@@ -165,6 +165,61 @@ def run_pennylane_numpy(num_qubits: int, num_samples: int, npy_path: str):
         return 0.0, 0.0, 0.0
 
 
+def run_pytorch_numpy(
+    num_qubits: int, num_samples: int, npy_path: str, encoding_method: str = "amplitude"
+):
+    """Benchmark PyTorch-native engine with NumPy file I/O."""
+    print("\n[PyTorch-native + NumPy] Loading and encoding...")
+
+    from qumat_qdp.encodings import encode_batch
+    from qumat_qdp.engine import QdpEngine as PyTorchEngine
+
+    try:
+        engine = PyTorchEngine(device_id=0, precision="float32")
+    except Exception as exc:
+        print(f"  Init failed: {exc}")
+        return 0.0, 0.0, 0.0
+
+    device = engine.device
+
+    if torch.cuda.is_available():
+        torch.cuda.synchronize()
+    start_total = time.perf_counter()
+
+    try:
+        # Load NumPy file
+        data = np.load(npy_path)
+        data_tensor = torch.from_numpy(data)
+
+        # Encode
+        result = encode_batch(
+            data_tensor,
+            num_qubits,
+            encoding_method,
+            precision="float32",
+            device=device,
+        )
+
+        # Small computation to ensure GPU has processed the data
+        _ = result.abs().sum()
+
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+        duration_total = time.perf_counter() - start_total
+
+        throughput = num_samples / duration_total if duration_total > 0 else 0.0
+
+        print(f"  Total Time (I/O + Encode): {duration_total:.4f} s")
+        print(f"  Throughput: {throughput:.1f} samples/sec")
+        print(f"  Average per sample: {duration_total / num_samples * 1000:.2f} ms")
+
+        return duration_total, throughput, duration_total / num_samples
+
+    except Exception as exc:
+        print(f"  Error: {exc}")
+        return 0.0, 0.0, 0.0
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Benchmark NumPy I/O + Encoding: Mahout vs PennyLane"
@@ -191,7 +246,7 @@ def main():
         "--frameworks",
         type=str,
         default="all",
-        help="Comma-separated list: mahout,pennylane or 'all'",
+        help="Comma-separated list: mahout,pytorch,pennylane or 'all'",
     )
     parser.add_argument(
         "--encoding-method",
@@ -204,7 +259,7 @@ def main():
 
     # Parse frameworks
     if args.frameworks.lower() == "all":
-        frameworks = ["mahout", "pennylane"]
+        frameworks = ["mahout", "pytorch", "pennylane"]
     else:
         frameworks = [f.strip().lower() for f in args.frameworks.split(",")]
 
@@ -251,6 +306,17 @@ def main():
                 "avg_per_sample": avg_per_sample,
             }
 
+    if "pytorch" in frameworks:
+        t_total, throughput, avg_per_sample = run_pytorch_numpy(
+            num_qubits, num_samples, npy_path, args.encoding_method
+        )
+        if throughput > 0:
+            results["PyTorch"] = {
+                "time": t_total,
+                "throughput": throughput,
+                "avg_per_sample": avg_per_sample,
+            }
+
     if "pennylane" in frameworks:
         t_total, throughput, avg_per_sample = run_pennylane_numpy(
             num_qubits, num_samples, npy_path
@@ -262,41 +328,51 @@ def main():
                 "avg_per_sample": avg_per_sample,
             }
 
+    # Build display order: requested frameworks mapped to display names
+    framework_labels = {
+        "mahout": "Mahout",
+        "pytorch": "PyTorch",
+        "pennylane": "PennyLane",
+    }
+
     # Print summary
-    if results:
-        print("\n" + BAR)
-        print("SUMMARY")
-        print(BAR)
-        print(
-            f"{'Framework':<15} {'Time (s)':<12} {'Throughput':<20} {'Avg/Sample':<15}"
-        )
+    print("\n" + BAR)
+    print("SUMMARY")
+    print(BAR)
+    print(
+        f"{'Framework':<15} {'Time (s)':<12} {'Throughput':<20} {'Avg/Sample (ms)':<15}"
+    )
+    print(SEP)
+
+    for fw in frameworks:
+        label = framework_labels.get(fw, fw)
+        if label in results:
+            m = results[label]
+            print(
+                f"{label:<15} "
+                f"{m['time']:<12.4f} "
+                f"{m['throughput']:<20.1f} "
+                f"{m['avg_per_sample'] * 1000:<15.2f}"
+            )
+        else:
+            print(f"{label:<15} {'N/A':<12} {'N/A':<20} {'N/A':<15}")
+
+    if len(results) >= 2:
+        print("\n" + SEP)
+        print("SPEEDUP COMPARISON")
         print(SEP)
 
-        sorted_results = sorted(
-            results.items(), key=lambda x: x[1]["throughput"], reverse=True
-        )
-
-        for name, metrics in sorted_results:
-            print(
-                f"{name:<15} "
-                f"{metrics['time']:<12.4f} "
-                f"{metrics['throughput']:<20.1f} "
-                f"{metrics['avg_per_sample'] * 1000:<15.2f}"
-            )
-
-        if len(results) > 1:
-            print("\n" + SEP)
-            print("SPEEDUP COMPARISON")
-            print(SEP)
-
-            if "Mahout" in results and "PennyLane" in results:
-                speedup = (
-                    results["Mahout"]["throughput"] / results["PennyLane"]["throughput"]
-                )
-                print(f"Mahout vs PennyLane: {speedup:.2f}x")
-
-                time_ratio = results["PennyLane"]["time"] / results["Mahout"]["time"]
-                print(f"Time reduction: {time_ratio:.2f}x faster")
+        pairs = [
+            ("PyTorch", "Mahout"),
+            ("PyTorch", "PennyLane"),
+            ("Mahout", "PennyLane"),
+        ]
+        for a, b in pairs:
+            if a in results and b in results:
+                speedup = results[a]["throughput"] / results[b]["throughput"]
+                print(f"{a} vs {b}: {speedup:.2f}x")
+            elif a in results or b in results:
+                print(f"{a} vs {b}: N/A (missing {b if b not in results else a})")
 
     # Cleanup
     if not args.output:

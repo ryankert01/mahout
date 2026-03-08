@@ -95,7 +95,8 @@ exclude = [
 [tool.ty.analysis]
 # _qdp: compiled Rust extension (no type info for members)
 # api: benchmark module loaded via sys.path in tests
-allowed-unresolved-imports = ["_qdp", "_qdp.*", "api", "api.*"]
+# pyarrow: optional dependency, conditionally imported at runtime
+allowed-unresolved-imports = ["_qdp", "_qdp.*", "api", "api.*", "pyarrow", "pyarrow.*"]
 
 [tool.ruff]
 extend-exclude = ["**/*.ipynb"]

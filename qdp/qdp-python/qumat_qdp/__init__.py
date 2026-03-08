@@ -17,33 +17,41 @@
 """
 QDP (Quantum Data Processing) Python API.
 
-Public API: QdpEngine, QuantumTensor (Rust extension _qdp),
-QdpBenchmark, ThroughputResult, LatencyResult (benchmark API),
-QuantumDataLoader (data loader iterator).
+Public API: QdpEngine, QdpBenchmark, ThroughputResult, LatencyResult,
+QuantumDataLoader.
+
+The package prefers the PyTorch-native engine (no Rust/CUDA dependency).
+If the Rust extension (_qdp) is available, it is also exposed for advanced use.
 
 Usage:
-    from qumat_qdp import QdpEngine, QuantumTensor
+    from qumat_qdp import QdpEngine
     from qumat_qdp import QdpBenchmark, ThroughputResult, LatencyResult
     from qumat_qdp import QuantumDataLoader
 """
 
 from __future__ import annotations
 
-# Rust extension (built by maturin). QdpEngine/QuantumTensor are public for
-# advanced use; QdpBenchmark and QuantumDataLoader are the recommended high-level API.
-import _qdp
-
 from qumat_qdp.api import (
     LatencyResult,
     QdpBenchmark,
     ThroughputResult,
 )
+from qumat_qdp.engine import QdpEngine
 from qumat_qdp.loader import QuantumDataLoader
 
-# Re-export Rust extension types (getattr for compiled extension module)
-QdpEngine = getattr(_qdp, "QdpEngine")
-QuantumTensor = getattr(_qdp, "QuantumTensor")
-run_throughput_pipeline_py = getattr(_qdp, "run_throughput_pipeline_py", None)
+# Try to import Rust extension for backward compatibility.
+# The Rust-backed types are available as RustQdpEngine / QuantumTensor if needed.
+try:
+    import _qdp
+
+    RustQdpEngine = getattr(_qdp, "QdpEngine", None)
+    QuantumTensor = getattr(_qdp, "QuantumTensor", None)
+    run_throughput_pipeline_py = getattr(_qdp, "run_throughput_pipeline_py", None)
+except ImportError:
+    _qdp = None  # type: ignore[assignment]
+    RustQdpEngine = None
+    QuantumTensor = None
+    run_throughput_pipeline_py = None
 
 __all__ = [
     "LatencyResult",
@@ -51,6 +59,7 @@ __all__ = [
     "QdpEngine",
     "QuantumDataLoader",
     "QuantumTensor",
+    "RustQdpEngine",
     "ThroughputResult",
     "run_throughput_pipeline_py",
 ]
