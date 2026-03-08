@@ -99,7 +99,6 @@ exclude = [
 allowed-unresolved-imports = ["_qdp", "_qdp.*", "api", "api.*", "pyarrow", "pyarrow.*"]
 
 [tool.ruff]
-extend-exclude = ["**/*.ipynb"]
 target-version = "py310"
 
 [tool.ruff.lint]
