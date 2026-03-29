@@ -467,6 +467,252 @@ impl QuantumEncoder for AmplitudeEncoder {
 }
 
 impl AmplitudeEncoder {
+    /// Encode batch from GPU pointer WITHOUT per-batch synchronization (f64).
+    ///
+    /// Launches norm kernel → GPU-side validation kernel → encode kernel on the
+    /// provided stream and returns immediately. The caller is responsible for
+    /// syncing the stream and checking the error flag before consuming results.
+    ///
+    /// Returns `(GpuStateVector, CudaSlice<i32>)` where the `CudaSlice<i32>`
+    /// contains a single int: 0 if all norms are valid, 1 if any sample has
+    /// zero or non-finite norm.
+    ///
+    /// # Safety
+    /// The input pointer must point to valid GPU memory containing at least
+    /// `num_samples * sample_size` f64 elements on the same device as `device`.
+    #[cfg(target_os = "linux")]
+    pub unsafe fn encode_batch_from_gpu_ptr_no_sync(
+        device: &Arc<CudaDevice>,
+        input_batch_d: *const c_void,
+        num_samples: usize,
+        sample_size: usize,
+        num_qubits: usize,
+        stream: *mut c_void,
+    ) -> Result<(GpuStateVector, cudarc::driver::CudaSlice<i32>)> {
+        let state_len = 1 << num_qubits;
+        if num_samples == 0 {
+            return Err(MahoutError::InvalidInput(
+                "Number of samples cannot be zero".into(),
+            ));
+        }
+        if sample_size == 0 {
+            return Err(MahoutError::InvalidInput(
+                "Sample size cannot be zero".into(),
+            ));
+        }
+        if sample_size > state_len {
+            return Err(MahoutError::InvalidInput(format!(
+                "Sample size {} exceeds state vector size {} (2^{} qubits)",
+                sample_size, state_len, num_qubits
+            )));
+        }
+        let input_batch_d = input_batch_d as *const f64;
+        let batch_state_vector = {
+            crate::profile_scope!("GPU::AllocBatch");
+            GpuStateVector::new_batch(device, num_samples, num_qubits, Precision::Float64)?
+        };
+        // Norm computation
+        let inv_norms_gpu = {
+            crate::profile_scope!("GPU::BatchNormKernel");
+            use cudarc::driver::DevicePtrMut;
+            let mut buffer = device.alloc_zeros::<f64>(num_samples).map_err(|e| {
+                MahoutError::MemoryAllocation(format!("Failed to allocate norm buffer: {:?}", e))
+            })?;
+            let ret = unsafe {
+                qdp_kernels::launch_l2_norm_batch(
+                    input_batch_d,
+                    num_samples,
+                    sample_size,
+                    *buffer.device_ptr_mut() as *mut f64,
+                    stream,
+                )
+            };
+            if ret != 0 {
+                return Err(MahoutError::KernelLaunch(format!(
+                    "Norm reduction kernel failed with CUDA error code: {} ({})",
+                    ret,
+                    cuda_error_to_string(ret)
+                )));
+            }
+            buffer
+        };
+        // GPU-side validation (no D2H copy, no sync)
+        let error_flag = {
+            crate::profile_scope!("GPU::NormValidationAsync");
+            use cudarc::driver::{DevicePtr, DevicePtrMut};
+            let mut flag = device.alloc_zeros::<i32>(1).map_err(|e| {
+                MahoutError::MemoryAllocation(format!("Failed to allocate error flag: {:?}", e))
+            })?;
+            let ret = unsafe {
+                qdp_kernels::launch_validate_inv_norms_batch(
+                    *inv_norms_gpu.device_ptr() as *const f64,
+                    num_samples,
+                    *flag.device_ptr_mut() as *mut i32,
+                    stream,
+                )
+            };
+            if ret != 0 {
+                return Err(MahoutError::KernelLaunch(format!(
+                    "Norm validation kernel failed with CUDA error code: {} ({})",
+                    ret,
+                    cuda_error_to_string(ret)
+                )));
+            }
+            flag
+        };
+        // Launch encode kernel
+        {
+            crate::profile_scope!("GPU::BatchKernelLaunch");
+            use cudarc::driver::DevicePtr;
+            let state_ptr = batch_state_vector.ptr_f64().ok_or_else(|| {
+                MahoutError::InvalidInput(
+                    "Batch state vector precision mismatch (expected float64 buffer)".to_string(),
+                )
+            })?;
+            let ret = unsafe {
+                qdp_kernels::launch_amplitude_encode_batch(
+                    input_batch_d,
+                    state_ptr as *mut c_void,
+                    *inv_norms_gpu.device_ptr() as *const f64,
+                    num_samples,
+                    sample_size,
+                    state_len,
+                    stream,
+                )
+            };
+            if ret != 0 {
+                return Err(MahoutError::KernelLaunch(format!(
+                    "Batch kernel launch failed with CUDA error code: {} ({})",
+                    ret,
+                    cuda_error_to_string(ret)
+                )));
+            }
+        }
+        // NO sync — caller is responsible
+        Ok((batch_state_vector, error_flag))
+    }
+
+    /// Encode batch from GPU pointer WITHOUT per-batch synchronization (f32).
+    ///
+    /// See [`encode_batch_from_gpu_ptr_no_sync`] for details.
+    ///
+    /// # Safety
+    /// The input pointer must point to valid GPU memory containing at least
+    /// `num_samples * sample_size` f32 elements on the same device as `device`.
+    #[cfg(target_os = "linux")]
+    pub unsafe fn encode_batch_from_gpu_ptr_f32_no_sync(
+        device: &Arc<CudaDevice>,
+        input_batch_d: *const f32,
+        num_samples: usize,
+        sample_size: usize,
+        num_qubits: usize,
+        stream: *mut c_void,
+    ) -> Result<(GpuStateVector, cudarc::driver::CudaSlice<i32>)> {
+        let state_len = 1 << num_qubits;
+        if num_samples == 0 {
+            return Err(MahoutError::InvalidInput(
+                "Number of samples cannot be zero".into(),
+            ));
+        }
+        if sample_size == 0 {
+            return Err(MahoutError::InvalidInput(
+                "Sample size cannot be zero".into(),
+            ));
+        }
+        if sample_size > state_len {
+            return Err(MahoutError::InvalidInput(format!(
+                "Sample size {} exceeds state vector size {} (2^{} qubits)",
+                sample_size, state_len, num_qubits
+            )));
+        }
+
+        let batch_state_vector =
+            GpuStateVector::new_batch(device, num_samples, num_qubits, Precision::Float32)?;
+
+        let inv_norms_gpu = {
+            crate::profile_scope!("GPU::BatchNormKernelF32");
+            use cudarc::driver::DevicePtrMut;
+            let mut buffer = device.alloc_zeros::<f32>(num_samples).map_err(|e| {
+                MahoutError::MemoryAllocation(format!(
+                    "Failed to allocate f32 norm buffer: {:?}",
+                    e
+                ))
+            })?;
+            let ret = unsafe {
+                qdp_kernels::launch_l2_norm_batch_f32(
+                    input_batch_d,
+                    num_samples,
+                    sample_size,
+                    *buffer.device_ptr_mut() as *mut f32,
+                    stream,
+                )
+            };
+            if ret != 0 {
+                return Err(MahoutError::KernelLaunch(format!(
+                    "Norm reduction kernel f32 failed with CUDA error code: {} ({})",
+                    ret,
+                    cuda_error_to_string(ret)
+                )));
+            }
+            buffer
+        };
+
+        let error_flag = {
+            crate::profile_scope!("GPU::NormValidationAsyncF32");
+            use cudarc::driver::{DevicePtr, DevicePtrMut};
+            let mut flag = device.alloc_zeros::<i32>(1).map_err(|e| {
+                MahoutError::MemoryAllocation(format!("Failed to allocate error flag: {:?}", e))
+            })?;
+            let ret = unsafe {
+                qdp_kernels::launch_validate_inv_norms_batch_f32(
+                    *inv_norms_gpu.device_ptr() as *const f32,
+                    num_samples,
+                    *flag.device_ptr_mut() as *mut i32,
+                    stream,
+                )
+            };
+            if ret != 0 {
+                return Err(MahoutError::KernelLaunch(format!(
+                    "Norm validation kernel f32 failed with CUDA error code: {} ({})",
+                    ret,
+                    cuda_error_to_string(ret)
+                )));
+            }
+            flag
+        };
+
+        {
+            crate::profile_scope!("GPU::BatchKernelLaunchF32");
+            use cudarc::driver::DevicePtr;
+            let state_ptr = batch_state_vector.ptr_f32().ok_or_else(|| {
+                MahoutError::InvalidInput(
+                    "Batch state vector precision mismatch (expected float32 buffer)".to_string(),
+                )
+            })?;
+            let ret = unsafe {
+                qdp_kernels::launch_amplitude_encode_batch_f32(
+                    input_batch_d,
+                    state_ptr as *mut c_void,
+                    *inv_norms_gpu.device_ptr() as *const f32,
+                    num_samples,
+                    sample_size,
+                    state_len,
+                    stream,
+                )
+            };
+            if ret != 0 {
+                return Err(MahoutError::KernelLaunch(format!(
+                    "Batch kernel f32 launch failed with CUDA error code: {} ({})",
+                    ret,
+                    cuda_error_to_string(ret)
+                )));
+            }
+        }
+
+        // NO sync — caller is responsible
+        Ok((batch_state_vector, error_flag))
+    }
+
     /// Async pipeline encoding for large data
     ///
     /// Uses the generic dual-stream pipeline infrastructure to overlap

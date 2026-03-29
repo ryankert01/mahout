@@ -577,6 +577,146 @@ impl GpuStateVector {
             )),
         }
     }
+
+    /// Convert precision on a specific CUDA stream WITHOUT synchronizing.
+    ///
+    /// Identical to [`to_precision`] except:
+    /// - The conversion kernel runs on the given `stream` instead of the default stream.
+    /// - **No `device.synchronize()` is called** — the caller must sync the stream
+    ///   before reading the result.
+    #[cfg(target_os = "linux")]
+    pub fn to_precision_on_stream(
+        &self,
+        device: &Arc<CudaDevice>,
+        target: Precision,
+        stream: *mut std::ffi::c_void,
+    ) -> Result<Self> {
+        if self.precision() == target {
+            return Ok(self.clone());
+        }
+
+        match (self.precision(), target) {
+            (Precision::Float32, Precision::Float64) => {
+                let requested_bytes = self
+                    .size_elements
+                    .checked_mul(std::mem::size_of::<CuDoubleComplex>())
+                    .ok_or_else(|| {
+                        MahoutError::MemoryAllocation(format!(
+                            "Requested GPU allocation size overflow (elements={})",
+                            self.size_elements
+                        ))
+                    })?;
+
+                ensure_device_memory_available(
+                    requested_bytes,
+                    "state vector precision conversion",
+                    Some(self.num_qubits),
+                )?;
+
+                let slice = unsafe { device.alloc::<CuDoubleComplex>(self.size_elements) }
+                    .map_err(|e| {
+                        map_allocation_error(
+                            requested_bytes,
+                            "state vector precision conversion",
+                            Some(self.num_qubits),
+                            e,
+                        )
+                    })?;
+
+                let src_ptr = self.ptr_f32().ok_or_else(|| {
+                    MahoutError::InvalidInput(
+                        "Source state vector is not Float32; cannot convert to Float64".to_string(),
+                    )
+                })?;
+
+                let ret = unsafe {
+                    qdp_kernels::convert_state_to_double(
+                        src_ptr as *const CuComplex,
+                        *slice.device_ptr() as *mut CuDoubleComplex,
+                        self.size_elements,
+                        stream,
+                    )
+                };
+
+                if ret != 0 {
+                    return Err(MahoutError::KernelLaunch(format!(
+                        "Precision conversion kernel failed: {}",
+                        ret
+                    )));
+                }
+
+                // NO sync — caller is responsible
+                Ok(Self {
+                    buffer: Arc::new(BufferStorage::F64(GpuBufferRaw { slice })),
+                    num_qubits: self.num_qubits,
+                    size_elements: self.size_elements,
+                    num_samples: self.num_samples,
+                    device_id: device.ordinal(),
+                })
+            }
+            (Precision::Float64, Precision::Float32) => {
+                let requested_bytes = self
+                    .size_elements
+                    .checked_mul(std::mem::size_of::<CuComplex>())
+                    .ok_or_else(|| {
+                        MahoutError::MemoryAllocation(format!(
+                            "Requested GPU allocation size overflow (elements={})",
+                            self.size_elements
+                        ))
+                    })?;
+
+                ensure_device_memory_available(
+                    requested_bytes,
+                    "state vector precision conversion",
+                    Some(self.num_qubits),
+                )?;
+
+                let slice =
+                    unsafe { device.alloc::<CuComplex>(self.size_elements) }.map_err(|e| {
+                        map_allocation_error(
+                            requested_bytes,
+                            "state vector precision conversion",
+                            Some(self.num_qubits),
+                            e,
+                        )
+                    })?;
+
+                let src_ptr = self.ptr_f64().ok_or_else(|| {
+                    MahoutError::InvalidInput(
+                        "Source state vector is not Float64; cannot convert to Float32".to_string(),
+                    )
+                })?;
+
+                let ret = unsafe {
+                    qdp_kernels::convert_state_to_float(
+                        src_ptr as *const CuDoubleComplex,
+                        *slice.device_ptr() as *mut CuComplex,
+                        self.size_elements,
+                        stream,
+                    )
+                };
+
+                if ret != 0 {
+                    return Err(MahoutError::KernelLaunch(format!(
+                        "Precision conversion kernel failed: {}",
+                        ret
+                    )));
+                }
+
+                // NO sync — caller is responsible
+                Ok(Self {
+                    buffer: Arc::new(BufferStorage::F32(GpuBufferRaw { slice })),
+                    num_qubits: self.num_qubits,
+                    size_elements: self.size_elements,
+                    num_samples: self.num_samples,
+                    device_id: device.ordinal(),
+                })
+            }
+            _ => Err(MahoutError::NotImplemented(
+                "Requested precision conversion is not supported".to_string(),
+            )),
+        }
+    }
 }
 
 // === Pinned Memory Implementation ===

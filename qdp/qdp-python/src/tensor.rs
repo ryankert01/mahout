@@ -33,6 +33,32 @@ use qdp_core::dlpack::DLManagedTensor;
 pub struct QuantumTensor {
     pub ptr: *mut DLManagedTensor,
     pub consumed: bool,
+    /// Deferred norm validation error flag (set by no-sync encode path).
+    /// Checked lazily in `__dlpack__` after the stream is synced.
+    #[cfg(target_os = "linux")]
+    pub error_flag: Option<qdp_core::GpuErrorFlag>,
+}
+
+impl QuantumTensor {
+    /// Create a new QuantumTensor (no deferred error flag).
+    pub fn new(ptr: *mut DLManagedTensor) -> Self {
+        Self {
+            ptr,
+            consumed: false,
+            #[cfg(target_os = "linux")]
+            error_flag: None,
+        }
+    }
+
+    /// Create a new QuantumTensor with a deferred norm validation error flag.
+    #[cfg(target_os = "linux")]
+    pub fn with_error_flag(ptr: *mut DLManagedTensor, flag: qdp_core::GpuErrorFlag) -> Self {
+        Self {
+            ptr,
+            consumed: false,
+            error_flag: Some(flag),
+        }
+    }
 }
 
 #[pymethods]
@@ -71,6 +97,16 @@ impl QuantumTensor {
                     PyRuntimeError::new_err(format!("CUDA stream sync failed: {}", e))
                 })?;
             }
+        }
+
+        // Check deferred norm validation error flag (set by no-sync encode path).
+        // At this point the stream has been synced (either by the consumer above,
+        // or by PyTorch's from_dlpack which syncs the producer stream).
+        #[cfg(target_os = "linux")]
+        if let Some(ref flag) = self.error_flag {
+            flag.check().map_err(|e| {
+                PyRuntimeError::new_err(format!("Norm validation failed: {}", e))
+            })?;
         }
 
         // Mark as consumed to prevent double-free

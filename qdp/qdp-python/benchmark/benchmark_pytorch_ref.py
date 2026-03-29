@@ -173,7 +173,7 @@ def run_mahout_encode_only(
     """Run Mahout encoding from pre-generated CUDA tensors (encode-only)."""
     from _qdp import QdpEngine
 
-    engine = QdpEngine(device_id)
+    engine = QdpEngine(device_id, precision="float64")
     device = f"cuda:{device_id}"
     dim = _sample_dim(encoding_method, num_qubits)
     all_batches = _generate_batches(

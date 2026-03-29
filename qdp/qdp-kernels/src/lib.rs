@@ -163,6 +163,32 @@ unsafe extern "C" {
         stream: *mut c_void,
     ) -> i32;
 
+    /// Validate inverse norms on GPU (f64). Sets error_flag_d[0] = 1 if
+    /// any inv_norm is zero or non-finite. error_flag_d must be zero-initialized.
+    /// Returns CUDA error code (0 = success).
+    ///
+    /// # Safety
+    /// Pointers must reference valid device memory on the provided stream.
+    pub fn launch_validate_inv_norms_batch(
+        inv_norms_d: *const f64,
+        num_samples: usize,
+        error_flag_d: *mut i32,
+        stream: *mut c_void,
+    ) -> i32;
+
+    /// Validate inverse norms on GPU (f32). Sets error_flag_d[0] = 1 if
+    /// any inv_norm is zero or non-finite. error_flag_d must be zero-initialized.
+    /// Returns CUDA error code (0 = success).
+    ///
+    /// # Safety
+    /// Pointers must reference valid device memory on the provided stream.
+    pub fn launch_validate_inv_norms_batch_f32(
+        inv_norms_d: *const f32,
+        num_samples: usize,
+        error_flag_d: *mut i32,
+        stream: *mut c_void,
+    ) -> i32;
+
     /// Convert a complex128 state vector to complex64 on GPU.
     /// Returns CUDA error code (0 = success).
     ///
@@ -395,6 +421,28 @@ pub extern "C" fn launch_l2_norm_batch_f32(
     _num_samples: usize,
     _sample_len: usize,
     _inv_norms_out_d: *mut f32,
+    _stream: *mut c_void,
+) -> i32 {
+    999
+}
+
+#[cfg(any(not(target_os = "linux"), qdp_no_cuda))]
+#[unsafe(no_mangle)]
+pub extern "C" fn launch_validate_inv_norms_batch(
+    _inv_norms_d: *const f64,
+    _num_samples: usize,
+    _error_flag_d: *mut i32,
+    _stream: *mut c_void,
+) -> i32 {
+    999
+}
+
+#[cfg(any(not(target_os = "linux"), qdp_no_cuda))]
+#[unsafe(no_mangle)]
+pub extern "C" fn launch_validate_inv_norms_batch_f32(
+    _inv_norms_d: *const f32,
+    _num_samples: usize,
+    _error_flag_d: *mut i32,
     _stream: *mut c_void,
 ) -> i32 {
     999

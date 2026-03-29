@@ -157,10 +157,7 @@ impl QdpEngine {
                     .engine
                     .encode(data_slice, num_qubits, encoding_method)
                     .map_err(|e| PyRuntimeError::new_err(format!("Encoding failed: {}", e)))?;
-                Ok(QuantumTensor {
-                    ptr,
-                    consumed: false,
-                })
+                Ok(QuantumTensor::new(ptr))
             }
             2 => {
                 // 2D array: batch encoding (zero-copy if already contiguous)
@@ -185,10 +182,7 @@ impl QdpEngine {
                         encoding_method,
                     )
                     .map_err(|e| PyRuntimeError::new_err(format!("Encoding failed: {}", e)))?;
-                Ok(QuantumTensor {
-                    ptr,
-                    consumed: false,
-                })
+                Ok(QuantumTensor::new(ptr))
             }
             _ => unreachable!("validate_shape() should have caught invalid ndim"),
         }
@@ -246,10 +240,7 @@ impl QdpEngine {
                                 PyRuntimeError::new_err(format!("Encoding failed: {}", e))
                             })?
                     };
-                    return Ok(QuantumTensor {
-                        ptr,
-                        consumed: false,
-                    });
+                    return Ok(QuantumTensor::new(ptr));
                 }
                 2 => {
                     // 2D CUDA tensor: batch encoding
@@ -269,10 +260,7 @@ impl QdpEngine {
                                 PyRuntimeError::new_err(format!("Encoding failed: {}", e))
                             })?
                     };
-                    return Ok(QuantumTensor {
-                        ptr,
-                        consumed: false,
-                    });
+                    return Ok(QuantumTensor::new(ptr));
                 }
                 _ => unreachable!("validate_shape() should have caught invalid ndim"),
             }
@@ -316,10 +304,7 @@ impl QdpEngine {
                     .engine
                     .encode(data_slice, num_qubits, encoding_method)
                     .map_err(|e| PyRuntimeError::new_err(format!("Encoding failed: {}", e)))?;
-                Ok(QuantumTensor {
-                    ptr,
-                    consumed: false,
-                })
+                Ok(QuantumTensor::new(ptr))
             }
             2 => {
                 // 2D tensor: batch encoding
@@ -348,10 +333,7 @@ impl QdpEngine {
                         encoding_method,
                     )
                     .map_err(|e| PyRuntimeError::new_err(format!("Encoding failed: {}", e)))?;
-                Ok(QuantumTensor {
-                    ptr,
-                    consumed: false,
-                })
+                Ok(QuantumTensor::new(ptr))
             }
             _ => unreachable!("validate_shape() should have caught invalid ndim"),
         }
@@ -373,10 +355,7 @@ impl QdpEngine {
             .engine
             .encode(&vec_data, num_qubits, encoding_method)
             .map_err(|e| PyRuntimeError::new_err(format!("Encoding failed: {}", e)))?;
-        Ok(QuantumTensor {
-            ptr,
-            consumed: false,
-        })
+        Ok(QuantumTensor::new(ptr))
     }
 
     /// Internal helper to encode from file based on extension.
@@ -437,10 +416,7 @@ impl QdpEngine {
             )));
         };
 
-        Ok(QuantumTensor {
-            ptr,
-            consumed: false,
-        })
+        Ok(QuantumTensor::new(ptr))
     }
 
     /// Encode from TensorFlow TensorProto file
@@ -469,10 +445,7 @@ impl QdpEngine {
             .map_err(|e| {
                 PyRuntimeError::new_err(format!("Encoding from TensorFlow failed: {}", e))
             })?;
-        Ok(QuantumTensor {
-            ptr,
-            consumed: false,
-        })
+        Ok(QuantumTensor::new(ptr))
     }
 
     /// Encode directly from a PyTorch CUDA tensor. Internal helper.
@@ -516,10 +489,7 @@ impl QdpEngine {
                             })?
                     };
 
-                    Ok(QuantumTensor {
-                        ptr,
-                        consumed: false,
-                    })
+                    Ok(QuantumTensor::new(ptr))
                 }
                 2 => {
                     let num_samples = tensor_info.shape[0] as usize;
@@ -528,9 +498,9 @@ impl QdpEngine {
                     let data_ptr_u64: u64 = data.call_method0("data_ptr")?.extract()?;
                     let data_ptr = data_ptr_u64 as *const f32;
 
-                    let ptr = unsafe {
+                    let (ptr, error_flag) = unsafe {
                         self.engine
-                            .encode_batch_from_gpu_ptr_f32_with_stream(
+                            .encode_batch_from_gpu_ptr_f32_no_sync(
                                 data_ptr,
                                 num_samples,
                                 sample_size,
@@ -545,10 +515,7 @@ impl QdpEngine {
                             })?
                     };
 
-                    Ok(QuantumTensor {
-                        ptr,
-                        consumed: false,
-                    })
+                    Ok(QuantumTensor::with_error_flag(ptr, error_flag))
                 }
                 _ => Err(PyRuntimeError::new_err(format!(
                     "Unsupported CUDA tensor shape: {}D. Expected 1D tensor for single \
@@ -575,32 +542,46 @@ impl QdpEngine {
                                 PyRuntimeError::new_err(format!("Encoding failed: {}", e))
                             })?
                     };
-                    Ok(QuantumTensor {
-                        ptr,
-                        consumed: false,
-                    })
+                    Ok(QuantumTensor::new(ptr))
                 }
                 2 => {
                     let num_samples = tensor_info.shape[0] as usize;
                     let sample_size = tensor_info.shape[1] as usize;
-                    let ptr = unsafe {
-                        self.engine
-                            .encode_batch_from_gpu_ptr_with_stream(
-                                tensor_info.data_ptr as *const std::ffi::c_void,
-                                num_samples,
-                                sample_size,
-                                num_qubits,
-                                encoding_method,
-                                stream_ptr,
-                            )
-                            .map_err(|e| {
-                                PyRuntimeError::new_err(format!("Encoding failed: {}", e))
-                            })?
-                    };
-                    Ok(QuantumTensor {
-                        ptr,
-                        consumed: false,
-                    })
+                    // Use no-sync path for amplitude encoding to avoid
+                    // per-batch GPU synchronization overhead.
+                    if method.as_str() == "amplitude" {
+                        let (ptr, error_flag) = unsafe {
+                            self.engine
+                                .encode_batch_from_gpu_ptr_no_sync(
+                                    tensor_info.data_ptr as *const std::ffi::c_void,
+                                    num_samples,
+                                    sample_size,
+                                    num_qubits,
+                                    encoding_method,
+                                    stream_ptr,
+                                )
+                                .map_err(|e| {
+                                    PyRuntimeError::new_err(format!("Encoding failed: {}", e))
+                                })?
+                        };
+                        Ok(QuantumTensor::with_error_flag(ptr, error_flag))
+                    } else {
+                        let ptr = unsafe {
+                            self.engine
+                                .encode_batch_from_gpu_ptr_with_stream(
+                                    tensor_info.data_ptr as *const std::ffi::c_void,
+                                    num_samples,
+                                    sample_size,
+                                    num_qubits,
+                                    encoding_method,
+                                    stream_ptr,
+                                )
+                                .map_err(|e| {
+                                    PyRuntimeError::new_err(format!("Encoding failed: {}", e))
+                                })?
+                        };
+                        Ok(QuantumTensor::new(ptr))
+                    }
                 }
                 _ => Err(PyRuntimeError::new_err(format!(
                     "Unsupported CUDA tensor shape: {}D. Expected 1D tensor for single \

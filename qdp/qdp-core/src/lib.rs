@@ -38,6 +38,40 @@ pub use error::{MahoutError, Result, cuda_error_to_string};
 pub use gpu::memory::Precision;
 pub use reader::{NullHandling, handle_float64_nulls};
 
+/// Opaque GPU error flag for deferred norm validation.
+///
+/// Wraps a single `i32` on the GPU plus a reference to the CUDA device.
+/// After the caller synchronizes the CUDA stream, call [`check`](GpuErrorFlag::check)
+/// to D2H-copy the flag and verify that all norms were valid.
+#[cfg(target_os = "linux")]
+pub struct GpuErrorFlag {
+    inner: cudarc::driver::CudaSlice<i32>,
+    device: Arc<cudarc::driver::CudaDevice>,
+}
+
+#[cfg(target_os = "linux")]
+impl GpuErrorFlag {
+    /// Create from an existing `CudaSlice<i32>` and device reference.
+    pub fn new(slice: cudarc::driver::CudaSlice<i32>, device: Arc<cudarc::driver::CudaDevice>) -> Self {
+        Self { inner: slice, device }
+    }
+
+    /// D2H-copy the flag and return `Err` if any norm was invalid.
+    ///
+    /// The caller **must** have synchronized the CUDA stream before calling this.
+    pub fn check(&self) -> Result<()> {
+        let host = self.device
+            .dtoh_sync_copy(&self.inner)
+            .map_err(|e| MahoutError::Cuda(format!("Failed to copy error flag: {:?}", e)))?;
+        if host.first().copied().unwrap_or(0) != 0 {
+            return Err(MahoutError::InvalidInput(
+                "One or more samples have zero or invalid norm".to_string(),
+            ));
+        }
+        Ok(())
+    }
+}
+
 // Throughput/latency pipeline runner: single path using QdpEngine and encode_batch in Rust.
 #[cfg(target_os = "linux")]
 mod pipeline_runner;
@@ -772,6 +806,110 @@ impl QdpEngine {
         }?;
         let batch_state_vector = batch_state_vector.to_precision(&self.device, self.precision)?;
         Ok(batch_state_vector.to_dlpack())
+    }
+
+    /// Encode batch from GPU pointer WITHOUT synchronization (amplitude only).
+    ///
+    /// All kernels (norm, validation, encode, precision conversion) are launched on the
+    /// given `stream` and the method returns immediately.  The caller must sync the stream
+    /// before consuming the DLPack pointer and must D2H-copy the returned error flag to
+    /// check for invalid norms.
+    ///
+    /// Returns `(dlpack_ptr, error_flag)` where `error_flag` is a single-element GPU
+    /// `CudaSlice<i32>`: 0 = all norms valid, 1 = at least one zero/non-finite norm.
+    ///
+    /// # Safety
+    /// The input pointer must point to valid GPU memory on the same device.
+    #[cfg(target_os = "linux")]
+    pub unsafe fn encode_batch_from_gpu_ptr_no_sync(
+        &self,
+        input_batch_d: *const std::ffi::c_void,
+        num_samples: usize,
+        sample_size: usize,
+        num_qubits: usize,
+        encoding_method: &str,
+        stream: *mut std::ffi::c_void,
+    ) -> Result<(*mut DLManagedTensor, GpuErrorFlag)> {
+        crate::profile_scope!("Mahout::EncodeBatchFromGpuPtrNoSync");
+        if num_samples == 0 {
+            return Err(MahoutError::InvalidInput(
+                "Number of samples cannot be zero".into(),
+            ));
+        }
+        if sample_size == 0 {
+            return Err(MahoutError::InvalidInput(
+                "Sample size cannot be zero".into(),
+            ));
+        }
+        validate_cuda_input_ptr(&self.device, input_batch_d)?;
+
+        let method = encoding_method.to_ascii_lowercase();
+        if method != "amplitude" {
+            return Err(MahoutError::NotImplemented(format!(
+                "No-sync encode is currently only implemented for amplitude encoding, got '{}'",
+                encoding_method
+            )));
+        }
+
+        let (batch_state_vector, error_flag) = unsafe {
+            gpu::AmplitudeEncoder::encode_batch_from_gpu_ptr_no_sync(
+                &self.device,
+                input_batch_d,
+                num_samples,
+                sample_size,
+                num_qubits,
+                stream,
+            )
+        }?;
+
+        let batch_state_vector =
+            batch_state_vector.to_precision_on_stream(&self.device, self.precision, stream)?;
+
+        Ok((batch_state_vector.to_dlpack(), GpuErrorFlag::new(error_flag, self.device.clone())))
+    }
+
+    /// Encode batch from GPU f32 pointer WITHOUT synchronization (amplitude only).
+    ///
+    /// See [`encode_batch_from_gpu_ptr_no_sync`](Self::encode_batch_from_gpu_ptr_no_sync).
+    ///
+    /// # Safety
+    /// The input pointer must point to valid GPU memory on the same device.
+    #[cfg(target_os = "linux")]
+    pub unsafe fn encode_batch_from_gpu_ptr_f32_no_sync(
+        &self,
+        input_batch_d: *const f32,
+        num_samples: usize,
+        sample_size: usize,
+        num_qubits: usize,
+        stream: *mut std::ffi::c_void,
+    ) -> Result<(*mut DLManagedTensor, GpuErrorFlag)> {
+        crate::profile_scope!("Mahout::EncodeBatchFromGpuPtrF32NoSync");
+        if num_samples == 0 {
+            return Err(MahoutError::InvalidInput(
+                "Number of samples cannot be zero".into(),
+            ));
+        }
+        if sample_size == 0 {
+            return Err(MahoutError::InvalidInput(
+                "Sample size cannot be zero".into(),
+            ));
+        }
+
+        let (batch_state_vector, error_flag) = unsafe {
+            gpu::AmplitudeEncoder::encode_batch_from_gpu_ptr_f32_no_sync(
+                &self.device,
+                input_batch_d,
+                num_samples,
+                sample_size,
+                num_qubits,
+                stream,
+            )
+        }?;
+
+        let batch_state_vector =
+            batch_state_vector.to_precision_on_stream(&self.device, self.precision, stream)?;
+
+        Ok((batch_state_vector.to_dlpack(), GpuErrorFlag::new(error_flag, self.device.clone())))
     }
 }
 

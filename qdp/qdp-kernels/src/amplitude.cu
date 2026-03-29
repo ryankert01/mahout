@@ -913,6 +913,74 @@ int launch_l2_norm_batch_f32(
     return (int)cudaGetLastError();
 }
 
+/// Kernel: validate inverse norms on GPU (f64).
+/// Sets error_flag_d[0] = 1 via atomicOr if any inv_norm is zero or non-finite.
+/// Must run AFTER finalize_inv_norm_kernel on the same stream.
+__global__ void validate_inv_norms_kernel(
+    const double* __restrict__ inv_norms,
+    size_t count,
+    int* __restrict__ error_flag_d
+) {
+    const size_t idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= count) return;
+    double v = inv_norms[idx];
+    if (v == 0.0 || !isfinite(v)) {
+        atomicOr(error_flag_d, 1);
+    }
+}
+
+/// Kernel: validate inverse norms on GPU (f32).
+__global__ void validate_inv_norms_kernel_f32(
+    const float* __restrict__ inv_norms,
+    size_t count,
+    int* __restrict__ error_flag_d
+) {
+    const size_t idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= count) return;
+    float v = inv_norms[idx];
+    if (v == 0.0f || !isfinite(v)) {
+        atomicOr(error_flag_d, 1);
+    }
+}
+
+/// Launch GPU-side norm validation for a batch (f64).
+/// Writes 1 to error_flag_d[0] if any inv_norm is zero or non-finite.
+/// error_flag_d must be zero-initialized before the call.
+int launch_validate_inv_norms_batch(
+    const double* inv_norms_d,
+    size_t num_samples,
+    int* error_flag_d,
+    cudaStream_t stream
+) {
+    if (num_samples == 0) {
+        return cudaErrorInvalidValue;
+    }
+    const int blockSize = FINALIZE_BLOCK_SIZE;
+    const int gridSize = (num_samples + blockSize - 1) / blockSize;
+    validate_inv_norms_kernel<<<gridSize, blockSize, 0, stream>>>(
+        inv_norms_d, num_samples, error_flag_d
+    );
+    return (int)cudaGetLastError();
+}
+
+/// Launch GPU-side norm validation for a batch (f32).
+int launch_validate_inv_norms_batch_f32(
+    const float* inv_norms_d,
+    size_t num_samples,
+    int* error_flag_d,
+    cudaStream_t stream
+) {
+    if (num_samples == 0) {
+        return cudaErrorInvalidValue;
+    }
+    const int blockSize = FINALIZE_BLOCK_SIZE;
+    const int gridSize = (num_samples + blockSize - 1) / blockSize;
+    validate_inv_norms_kernel_f32<<<gridSize, blockSize, 0, stream>>>(
+        inv_norms_d, num_samples, error_flag_d
+    );
+    return (int)cudaGetLastError();
+}
+
 /// Kernel: convert complex128 state vector to complex64.
 __global__ void convert_state_to_complex64_kernel(
     const cuDoubleComplex* __restrict__ input_state,

@@ -51,10 +51,7 @@ mod loader_impl {
             match result {
                 Ok(Some(ptr)) => {
                     slf.inner = Some(iter);
-                    Ok(QuantumTensor {
-                        ptr,
-                        consumed: false,
-                    })
+                    Ok(QuantumTensor::new(ptr))
                 }
                 Ok(None) => {
                     // Exhausted; do not put iterator back
