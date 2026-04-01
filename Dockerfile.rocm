@@ -1,0 +1,64 @@
+# Dockerfile for developing QDP with AMD ROCm (HIP)
+#
+# Build:
+#   docker build -f Dockerfile.rocm -t mahout-rocm .
+#
+# Run (requires AMD GPU + ROCm kernel driver on host):
+#   docker run -it --rm \
+#     --device=/dev/kfd --device=/dev/dri \
+#     --group-add video --group-add render \
+#     --security-opt seccomp=unconfined \
+#     -v $(pwd):/workspace -w /workspace \
+#     mahout-rocm
+#
+# Without a GPU (build/test stubs only):
+#   docker run -it --rm -v $(pwd):/workspace -w /workspace mahout-rocm
+
+FROM rocm/dev-ubuntu-24.04:6.4
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# ROCm environment
+ENV ROCM_PATH=/opt/rocm
+ENV HIP_PATH=${ROCM_PATH}
+ENV PATH="${ROCM_PATH}/bin:${ROCM_PATH}/hip/bin:${PATH}"
+ENV LD_LIBRARY_PATH="${ROCM_PATH}/lib:${ROCM_PATH}/hip/lib:${LD_LIBRARY_PATH}"
+
+# System dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    pkg-config \
+    git \
+    vim \
+    curl \
+    ca-certificates \
+    libssl-dev \
+    python3.12 \
+    python3.12-dev \
+    python3.12-venv \
+    python3-pip \
+    hipblas-dev \
+    rocblas-dev \
+    rocrand-dev \
+    rocfft-dev \
+    rocsolver-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Make python3.12 the default
+RUN update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.12 1 && \
+    update-alternatives --install /usr/bin/python python /usr/bin/python3.12 1
+
+# Install Rust
+RUN curl https://sh.rustup.rs -sSf | sh -s -- -y --default-toolchain stable
+ENV PATH="/root/.cargo/bin:${PATH}"
+
+# Install uv (Python package manager)
+RUN curl -LsSf https://astral.sh/uv/install.sh | sh
+ENV PATH="/root/.local/bin:${PATH}"
+
+# Install maturin for building PyO3 extensions
+RUN pip install --break-system-packages maturin
+
+WORKDIR /workspace
+
+CMD ["/bin/bash"]
