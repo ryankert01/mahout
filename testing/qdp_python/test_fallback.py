@@ -273,7 +273,10 @@ class TestLoaderPytorchBackend:
     def test_invalid_backend_raises(self):
         from qumat_qdp.loader import QuantumDataLoader
 
-        with pytest.raises(ValueError, match="'rust', 'pytorch', or 'auto'"):
+        with pytest.raises(
+            ValueError,
+            match=r"backend must be one of \['auto', 'pytorch', 'rust'\], got 'invalid'",
+        ):
             QuantumDataLoader(device_id=0).backend("invalid")
 
 
